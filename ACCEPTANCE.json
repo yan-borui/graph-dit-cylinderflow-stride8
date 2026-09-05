@@ -8,7 +8,7 @@
     "slurm_bash_syntax": "passed; no cluster job submitted",
     "shared_metrics_predictions_performance_byte_identical_to_mgn_release": true,
     "local_markdown_references_toml_json_and_private_path_scan": "passed",
-    "git_whitespace_check": "passed for release adapters and documentation; inherited trailing whitespace retained in vendored dgn4cfd files"
+    "git_whitespace_check": "passed after the existing commit hook applied Ruff formatting"
   },
   "implementation_checks": {
     "actual_vgae_training_and_train75_cache_on_synthetic_variable_meshes": "passed",
