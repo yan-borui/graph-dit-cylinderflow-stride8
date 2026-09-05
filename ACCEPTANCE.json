@@ -1,6 +1,18 @@
 {
   "observed_date": "2026-09-05",
   "scope": "Software delivery acceptance on Linux CPU, plus read-only verification of the released data and selected VGAE",
+  "rapid_lr_revision": {
+    "observed_date": "2026-09-05",
+    "default_search": "Three peak LRs x first tenfold drop at 100k/125k/150k x six architectures; 54 independent candidates",
+    "subsequent_drops": "Multiply by 0.1 every 50k updates, with a 1e-6 floor",
+    "base_recipe": "4k warmup to 3e-5; first drop at 125k to 3e-6; 175k reaches 1e-6",
+    "all_54_configs_warmup_first_drop_second_drop_and_floor_boundaries": "passed",
+    "new_documented_configuration_paths": "passed",
+    "cpu_training_resume_across_two_tenfold_drops": "bitwise_equal raw/EMA/Adam/noise state; actual LR sequence 1e-4, 1e-5, 1e-6, 1e-6 within floating-point rounding",
+    "initial_only_joint64_and_common_rescore": "passed again with the rapid-drop CPU fixture",
+    "formal_stability_near_150k_verified": false,
+    "previous_recipe_source": "ad6ada9272c4aac92327454347fbf68879876a78"
+  },
   "packaging_checks": {
     "python_syntax_files": 43,
     "validated_screen_configurations": 54,

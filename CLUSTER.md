@@ -6,12 +6,14 @@
 
 数据、共享表示和各run目录需在执行节点可见。代码与配置在整次campaign期间保持冻结；训练程序会复制所用Python源码，resume逐文件检查，拒绝代码或配方在途中变化。准备表示可以在一张卡上先完成；模型间共享文件，运行间不共享优化器或checkpoint。
 
+默认计划现为100k/125k/150k首次十倍快降。旧版已有作业使用原plan和`ad6ada9272c4aac92327454347fbf68879876a78`源码继续，新版计划写到`campaigns/rapid_screen`；不在正在使用的checkout中切换日程。
+
 ## Slurm示例
 
 在仓库根目录、激活好Python环境后提交。partition、account、时限、内存和并行额度按真实集群填写；脚本声明每个array task一张GPU。Slurm负责`CUDA_VISIBLE_DEVICES`。
 
 ```bash
-export PLAN="$PWD/campaigns/screen/plan.json"
+export PLAN="$PWD/campaigns/rapid_screen/plan.json"
 export DATA_DIR="/shared/cylinderflow/stride8"
 export ARTIFACTS="/shared/cylinderflow/graph_dit_representation"
 export PYTHON_BIN="$(command -v python)"
@@ -24,12 +26,12 @@ sbatch --array=0-53%16 --partition=YOUR_PARTITION --account=YOUR_ACCOUNT \
 
 脚本在Slurm复制到spool目录后仍从`REPO_ROOT`或`SLURM_SUBMIT_DIR`找到源码。默认CPU线程2，申请4个CPU；`--mem`只影响主机内存申请，GPU显存由卡型号决定。先用512×12配置和最大Train粗图跑`graph_dit.preflight`。该检查包含多次更新、非零attention梯度、两套EMA和完整64帧采样解码。
 
-晋级后改`PLAN=.../campaigns/extended/plan.json`，6个作业使用`--array=0-5%6`；确认阶段3个作业使用`--array=0-2%3`。计划生成和晋级命令只写任务清单，提交命令才消耗集群资源。
+晋级后改`PLAN=.../campaigns/rapid_extended/plan.json`，6个作业使用`--array=0-5%6`；确认阶段3个作业使用`--array=0-2%3`。计划生成和晋级命令只写任务清单，提交命令才消耗集群资源。
 
 ## 单机队列
 
 ```bash
-python -m graph_dit.campaign run-local --plan campaigns/screen/plan.json \
+python -m graph_dit.campaign run-local --plan campaigns/rapid_screen/plan.json \
   --data-dir "$DATA_DIR" --artifacts "$ARTIFACTS" --gpus 0,1,2,3,4,5,6,7
 ```
 
@@ -41,9 +43,9 @@ python -m graph_dit.campaign run-local --plan campaigns/screen/plan.json \
 
 ```bash
 python -m graph_dit.train \
-  --config campaigns/screen/configs/h1_w256_d8_lr3e-05_cosine_seed0.json \
+  --config campaigns/rapid_screen/configs/h1_w256_d8_lr3e-05_late_decay_drop125000_seed0.json \
   --data-dir "$DATA_DIR" --artifacts "$ARTIFACTS" \
-  --output-dir campaigns/screen/runs/h1_w256_d8_lr3e-05_cosine_seed0 \
+  --output-dir campaigns/rapid_screen/runs/h1_w256_d8_lr3e-05_late_decay_drop125000_seed0 \
   --stage-end-updates 250000 --device cuda:0 --resume
 ```
 
@@ -56,7 +58,7 @@ python -m graph_dit.train \
 ## 运行目录
 
 ```text
-campaigns/screen/
+campaigns/rapid_screen/
   plan.json, configs/*.json       # 确切候选和预定分配
   launcher_logs/                  # 逐作业命令、设备分配、日志、exit
   runs/<candidate>/

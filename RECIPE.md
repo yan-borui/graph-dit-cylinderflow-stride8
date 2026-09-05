@@ -42,15 +42,32 @@ python -m graph_dit.representation prepare --data-dir data/stride8 \
 
 第一轮完整矩阵为54个配置，见`configs/search.json`。可在生成计划前缩小或扩展候选集合；实际发布结果必须附原计划及全部失败记录。
 
-令k为即将执行的、从1开始的optimizer update，峰值学习率为eta，floor=1e-6，warmup W=4000，固定schedule endpoint U=1,000,000。前W步使用eta*k/W。warmup之后：
+约150k updates附近需要快速降LR是本轮默认搜索采用的已有经验约束。原发布版将cosine终点设为1M，峰值1e-4时150k仍为9.4843e-5、200k仍为9.0838e-5；其late_decay也仅每50k减半。新版默认移除长cosine/constant，使用十倍阶梯快降，并搜索首次快降的时点。该经验用于设计候选，不代表已证明每个H1配置都会稳定。
 
-| 日程 | 定义 |
-| --- | --- |
-| constant | eta保持不变 |
-| cosine | floor + (eta-floor)*(1+cos(pi*(k-W)/(U-W)))/2 |
-| late_decay | 从k=150,000开始乘0.5，随后每50,000updates再次乘0.5，最低floor |
+令$k$为即将执行的、从1开始的optimizer update，峰值为$\eta$，下限为$10^{-6}$，warmup为$W=4000$，首次下降时点为$S\in\{100000,125000,150000\}$，后续下降间隔为$P=50000$。完整计划覆盖$U=1000000$次更新。日程为：
 
-学习率候选为1e-5、3e-5、1e-4。width候选256/384/512，depth候选8/12。stage endpoint控制这次分配多少计算；schedule endpoint控制从开始就固定的LR曲线。第一段250k自然结束，extend从原始raw权重、Adam状态、EMA、sample cursor和RNG继续到1M；原日程不会被缩放成250k cosine再重启。
+$$
+\operatorname{lr}(k)=
+\begin{cases}
+\eta k/W, & 1\le k\le W,\\
+\eta, & W<k<S,\\
+\max\left(10^{-6},\eta\,10^{-(1+\lfloor(k-S)/P\rfloor)}\right), & S\le k\le U.
+\end{cases}
+$$
+
+首次十倍下降发生在第$S$次optimizer更新之前。以$S=150000$为例：
+
+| 峰值LR | warmup结束至149,999 | 150,000至199,999 | 200,000以后 |
+| --- | --- | --- | --- |
+| 1e-5 | 1e-5 | 1e-6 | 1e-6 |
+| 3e-5 | 3e-5 | 3e-6 | 1e-6 |
+| 1e-4 | 1e-4 | 1e-5 | 1e-6 |
+
+100k/125k配置把整组下降时点提前50k/25k。默认base为峰值3e-5、125k首次下降：4k达到3e-5，125k降至3e-6，175k降至1e-6。`late_decay`实现读取`decay_start_updates`、`decay_period_updates`、`decay_factor`；本轮固定后两者为50k和0.1，起点在search.json中枚举。任务ID带`drop100000/drop125000/drop150000`，每份生成配置保存确切日程。
+
+学习率候选为1e-5、3e-5、1e-4。width候选256/384/512，depth候选8/12。stage endpoint控制这次分配多少计算；schedule endpoint给出预先定义的完整训练范围。第一段250k自然结束，extend从原始raw权重、Adam状态、EMA、sample cursor和RNG继续到1M；续训保持同一个绝对更新日程和1e-6尾段。
+
+原cosine和constant解析保留以读取旧配置。已经产生的原版运行继续使用其原plan及源码提交`ad6ada9272c4aac92327454347fbf68879876a78`；新版另生成`campaigns/rapid_screen`。更换日程需要新运行，不能在原run中改LR后resume。
 
 每50k checkpoint在统一Validation-24、sampling labels0/1/2上评价raw/EMA0.999/EMA0.9999。相同checkpoint各状态使用相同派生seed。EMA按每次optimizer update更新，初始化为初始raw权重，参数使用`ema=beta*ema+(1-beta)*raw`，buffers直接复制。0.999/0.9999的平滑尺度约1000/10000updates。EMA只增加权重副本与评价开销，三种状态共享同一次训练。
 

@@ -4,6 +4,8 @@
 
 本仓库提供可运行的搜索方案。`configs/base.json` 是起跑配方；经过完整搜索和独立训练复核以后，`freeze` 才会产生 `locked_recipe.json`。当前没有把尚未执行的候选称为最佳模型。
 
+默认搜索按约150k更新附近出现不稳定的已有经验设计：4k warmup后，在100k/125k/150k三个候选时点首次把LR降至1/10，随后每50k再次降至1/10，下限1e-6。百万步cosine和恒定LR已移出默认搜索。起跑配置为峰值3e-5、125k首次快降；这些数值仍需目标实验验证。
+
 ## 快速开始
 
 先按 [ENVIRONMENT.md](ENVIRONMENT.md) 建立环境。全部命令在仓库根目录执行；需要 Linux CPU 或 CUDA GPU。数据、缓存和运行目录都可放在集群共享盘上。
@@ -26,16 +28,16 @@ python -m graph_dit.representation prepare \
   --output-dir artifacts/shared --device cuda:0
 
 # 生成 54 份明确的配置与任务清单，不启动训练。
-python -m graph_dit.campaign plan --output-dir campaigns/screen
+python -m graph_dit.campaign plan --output-dir campaigns/rapid_screen
 
 # 先验收目标设备及计划中的最大容量。
 python -m graph_dit.preflight \
-  --config campaigns/screen/configs/h1_w512_d12_lr0.0001_constant_seed0.json \
+  --config campaigns/rapid_screen/configs/h1_w512_d12_lr0.0001_late_decay_drop150000_seed0.json \
   --data-dir data/stride8 --artifacts artifacts/shared \
   --output-dir runs/preflight_w512_d12 --device cuda:0
 
 # 例如使用已经分配给你的 8 张 GPU；每卡同时只有一个训练进程。
-python -m graph_dit.campaign run-local --plan campaigns/screen/plan.json \
+python -m graph_dit.campaign run-local --plan campaigns/rapid_screen/plan.json \
   --data-dir data/stride8 --artifacts artifacts/shared --gpus 0,1,2,3,4,5,6,7
 ```
 
@@ -45,7 +47,7 @@ python -m graph_dit.campaign run-local --plan campaigns/screen/plan.json \
 
 | 步骤 | 工作 | 固定分配 |
 | --- | --- | --- |
-| Screen | LR `1e-5 / 3e-5 / 1e-4` × cosine / late_decay / constant × width `256 / 384 / 512` × depth `8 / 12` | 54 作业，seed 0，各 250,000 updates |
+| Screen | 峰值LR `1e-5 / 3e-5 / 1e-4` × 首次十倍快降时点 `100k / 125k / 150k` × width `256 / 384 / 512` × depth `8 / 12` | 54 作业，seed 0，各 250,000 updates |
 | Extend | Validation-24 选择 6 个候选，恢复同一原始状态与调度 | 续至各 1,000,000 updates |
 | Freeze / confirm | 锁结构、LR、调度及 raw/EMA 规则；独立 training seeds `101 / 102 / 103` | 各 1,000,000 updates，全部报告 |
 | Full Validation | 每个独立训练运行选定一个 checkpoint，评价 Validation-100 × sampling seeds 0/1/2 | 每模型 300 clips |
@@ -54,14 +56,14 @@ EMA `0.999 / 0.9999` 在每次训练中同时维护，和 raw 在相同 checkpoi
 
 ```bash
 # 首轮所有计划作业结束（包括留下失败记录的作业）后继续。
-python -m graph_dit.campaign promote --plan campaigns/screen/plan.json \
-  --top-k 6 --stage-end-updates 1000000 --output-dir campaigns/extended
-python -m graph_dit.campaign run-local --plan campaigns/extended/plan.json \
+python -m graph_dit.campaign promote --plan campaigns/rapid_screen/plan.json \
+  --top-k 6 --stage-end-updates 1000000 --output-dir campaigns/rapid_extended
+python -m graph_dit.campaign run-local --plan campaigns/rapid_extended/plan.json \
   --data-dir data/stride8 --artifacts artifacts/shared --gpus 0,1,2,3,4,5
 
-python -m graph_dit.campaign freeze --plan campaigns/extended/plan.json \
-  --seeds 101,102,103 --output-dir campaigns/confirm
-python -m graph_dit.campaign run-local --plan campaigns/confirm/plan.json \
+python -m graph_dit.campaign freeze --plan campaigns/rapid_extended/plan.json \
+  --seeds 101,102,103 --output-dir campaigns/rapid_confirm
+python -m graph_dit.campaign run-local --plan campaigns/rapid_confirm/plan.json \
   --data-dir data/stride8 --artifacts artifacts/shared --gpus 0,1,2
 ```
 
@@ -70,10 +72,10 @@ python -m graph_dit.campaign run-local --plan campaigns/confirm/plan.json \
 完整 checkpoint、优化器/EMA、源码快照、逐条预测、日志与失败记录保存在训练环境。生成可读曲线、配置卡、候选表、配对 GIF/MP4，并按双方允许的范围回传精简结果；没有自动上传或发送数据的功能。
 
 ```bash
-python -m graph_dit.report --plan campaigns/extended/plan.json --output-dir reports/candidates
-python -m graph_dit.report --run campaigns/confirm/runs/confirmation_seed101 \
+python -m graph_dit.report --plan campaigns/rapid_extended/plan.json --output-dir reports/candidates
+python -m graph_dit.report --run campaigns/rapid_confirm/runs/confirmation_seed101 \
   --output-dir reports/seed101 --movies
-python -m graph_dit.evaluate --run campaigns/confirm/runs/confirmation_seed101 \
+python -m graph_dit.evaluate --run campaigns/rapid_confirm/runs/confirmation_seed101 \
   --data-dir data/stride8 --artifacts artifacts/shared \
   --scope validation --output-dir runs/validation_seed101 --device cuda:0
 ```

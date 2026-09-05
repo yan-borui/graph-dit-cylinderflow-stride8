@@ -35,9 +35,17 @@ def make_plan(base_file: Path, search_file: Path, output: Path) -> dict:
     base, search = load_config(base_file), read(search_file)
     output.mkdir(parents=True, exist_ok=False)
     tasks = []
-    for lr, schedule, width, depth in itertools.product(
+    schedules = []
+    for schedule in search["schedules"]:
+        starts = (
+            search.get("decay_start_updates", [base["training"]["decay_start_updates"]])
+            if schedule == "late_decay"
+            else [None]
+        )
+        schedules.extend((schedule, start) for start in starts)
+    for lr, (schedule, start), width, depth in itertools.product(
         search["learning_rates"],
-        search["schedules"],
+        schedules,
         search["widths"],
         search["depths"],
     ):
@@ -45,8 +53,15 @@ def make_plan(base_file: Path, search_file: Path, output: Path) -> dict:
         config["seed"] = search["screen_seed"]
         config["model"].update(width=width, blocks=depth)
         config["training"].update(learning_rate=lr, schedule=schedule)
+        if start is not None:
+            config["training"]["decay_start_updates"] = start
         validate_config(config)
-        name = f"h1_w{width}_d{depth}_lr{lr:g}_{schedule}_seed{config['seed']}"
+        timing = (
+            f"_drop{start}"
+            if start is not None and "decay_start_updates" in search
+            else ""
+        )
+        name = f"h1_w{width}_d{depth}_lr{lr:g}_{schedule}{timing}_seed{config['seed']}"
         write(output / "configs" / (name + ".json"), config)
         tasks.append(
             {

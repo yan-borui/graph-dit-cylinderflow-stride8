@@ -91,7 +91,15 @@ def report_run(run: Path, output: Path, *, movies: bool = False) -> None:
         else "No completed checkpoint selection",
         f"Error: {status.get('error', 'none recorded')}",
     ]
-    figure = plt.figure(figsize=(12, 4))
+    training = config["training"]
+    if training["schedule"] == "late_decay":
+        lines.insert(
+            3,
+            f"First LR drop={training['decay_start_updates']:,}; "
+            f"multiply by {training['decay_factor']:g} every {training['decay_period_updates']:,}; "
+            f"floor={training['min_learning_rate']:g}",
+        )
+    figure = plt.figure(figsize=(12, 4.5))
     figure.text(0.04, 0.93, "\n\n".join(lines), va="top", fontsize=10, wrap=True)
     figure.savefig(output / "run_card.png", dpi=150, bbox_inches="tight")
     plt.close(figure)
