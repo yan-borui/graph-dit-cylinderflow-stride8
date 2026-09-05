@@ -1,0 +1,14 @@
+{
+  "model_origin": "https://github.com/tum-pbs/dgn4cfd",
+  "model_base_commit": "fe7634bb3d5fb39402cff5345f4d4e8d08323eef",
+  "model_snapshot_date": "2026-09-05",
+  "model_snapshot_note": "Includes the maintained, uncommitted H1 graph-attention implementation. This release commit is the executable source identity.",
+  "common_protocol_source": "https://github.com/yan-borui/meshgraphnets-cylinderflow-stride8",
+  "common_protocol_commit": "7ef6fff8068424e195438fafe84ff7bc170b305a",
+  "baselines": {
+    "MGN": "https://github.com/yan-borui/meshgraphnets-cylinderflow-stride8/tree/7ef6fff8068424e195438fafe84ff7bc170b305a",
+    "EAGLE": "https://github.com/yan-borui/eagle-cylinderflow-stride8/tree/54054905feacba1eb2e48813432ebb9fb0ec3640",
+    "AROMA": "https://github.com/yan-borui/aroma-cylinderflow-stride8/tree/89011a2a3fc3264ebb102b1510d822328c00bf1c",
+    "Text2PDE": "https://github.com/yan-borui/text2pde-multigeometry-1plus64/tree/471b0a12536088a8528fe853b39d3b9d252e1112"
+  }
+}

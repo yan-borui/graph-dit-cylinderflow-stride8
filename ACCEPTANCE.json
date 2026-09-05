@@ -1,0 +1,57 @@
+{
+  "observed_date": "2026-09-05",
+  "scope": "Software delivery acceptance on Linux CPU, plus read-only verification of the released data and selected VGAE",
+  "packaging_checks": {
+    "python_syntax_files": 43,
+    "validated_screen_configurations": 54,
+    "documented_cli_help_entrypoints": 12,
+    "slurm_bash_syntax": "passed; no cluster job submitted",
+    "shared_metrics_predictions_performance_byte_identical_to_mgn_release": true,
+    "local_markdown_references_toml_json_and_private_path_scan": "passed",
+    "git_whitespace_check": "passed for release adapters and documentation; inherited trailing whitespace retained in vendored dgn4cfd files"
+  },
+  "implementation_checks": {
+    "actual_vgae_training_and_train75_cache_on_synthetic_variable_meshes": "passed",
+    "actual_h1_b1_dit_updates_and_joint64_generation": "passed",
+    "continuous_vs_resumed_raw_ema_adam_noise_generator_and_sample_cursor": "bitwise_equal_on_cpu",
+    "changed_learning_rate_on_resume": "rejected",
+    "ema_arithmetic_independent_expected_value": "passed",
+    "validation_future_truth_perturbation_leaves_prediction_unchanged": "passed",
+    "observed_frame_preserved_and_inlet_wall_uv_writeback": "passed",
+    "common_offline_npz_rescore_matches_online_score": "passed",
+    "raw_and_both_ema_candidates_actually_evaluated": "passed",
+    "completed_allocation_promoted_and_resumed_without_schedule_reset": "passed",
+    "recipe_frozen_into_three_independent_confirmation_tasks": "passed; confirmation task generation only",
+    "warmup_cosine_constant_and_late_decay_boundary_values": "passed",
+    "forecast_only_timing_path_matches_quality_path": "bitwise_equal_on_cpu",
+    "common_benchmark_two_warmups_three_measured_repeats": "passed; one synthetic trajectory, no failed repeats",
+    "png_training_curves_run_card_candidate_table_gif_mp4": "generated; representative PNGs visually inspected"
+  },
+  "released_representation": {
+    "asset": "vgae_stride8_epoch930.pt",
+    "representation_id": "cylinderflow_stride8_vgae_epoch930_release_v1",
+    "epoch": 930,
+    "validation_total": 0.023929299879819156,
+    "asset_bytes": 9589563,
+    "weights_equal_to_selected_source_checkpoint": true,
+    "normalization_matches_released_data_manifest": true,
+    "strict_real_dataset_read": {"train_trajectories": 1000, "validation_trajectories": 100},
+    "real_train_trajectory_zero_encoding": {"physical_nodes": 1876, "latent_shape": [137, 1], "finite": true}
+  },
+  "resolved_acceptance_failure": {
+    "symptom": "Common benchmark required trajectory_index in the initial-only case dictionary",
+    "change": "Predictor.load_case now explicitly includes the integer trajectory_index",
+    "verification": "Same common benchmark completed all five warmup/measured calls after the fix"
+  },
+  "remaining_target_environment_checks": [
+    "Install and verify the chosen CUDA/PyTorch environment on the receiving cluster",
+    "Run the largest planned width512/depth12 and largest Train graph preflight on the allocated GPU",
+    "Execute the actual 54-candidate search, promotion, independent-seed confirmation and full Validation",
+    "Run the common GPU cost protocol with the four baseline checkpoints on matched hardware",
+    "Submit the supplied Slurm array on the receiving cluster, if Slurm is used"
+  ],
+  "formal_h1_tuning_completed": false,
+  "best_graph_dit_quality_claim": null,
+  "test_accessed": false,
+  "environment_record": "environment-observed.txt"
+}

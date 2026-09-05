@@ -1,0 +1,12 @@
+{
+  "description": "54 independent H1/B1 candidates. All have a fixed one-million-update LR plan; the first allocation ends at 250k.",
+  "learning_rates": [0.00001, 0.00003, 0.0001],
+  "schedules": ["cosine", "late_decay", "constant"],
+  "widths": [256, 384, 512],
+  "depths": [8, 12],
+  "screen_seed": 0,
+  "stage_end_updates": 250000,
+  "promotion_count": 6,
+  "promotion_end_updates": 1000000,
+  "confirmation_seeds": [101, 102, 103]
+}

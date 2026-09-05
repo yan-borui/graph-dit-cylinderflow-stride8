@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "graph-dit-cylinderflow"
+version = "0.1.0"
+description = "H1 graph attention, effective batch one, reproducible CylinderFlow tuning"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = [
+  "torch>=2.4", "torchvision", "torch-geometric>=2.6",
+  "numpy>=1.26", "scipy>=1.13", "h5py>=3.16", "matplotlib>=3.8",
+  "tensorboard>=2.18", "tqdm", "imageio", "imageio-ffmpeg", "Pillow"
+]
+
+[tool.setuptools.packages.find]
+include = ["graph_dit*", "dgn4cfd*"]

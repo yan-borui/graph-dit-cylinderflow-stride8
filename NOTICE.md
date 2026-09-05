@@ -1,0 +1,11 @@
+# Source and attribution
+
+The `dgn4cfd/` subset derives from [DGN4CFD](https://github.com/tum-pbs/dgn4cfd), by Mario Lino, Tobias Pfaff and Nils Thuerey, distributed under Apache-2.0. The original license is retained in `LICENSE`. The VGAE, graph hierarchy, mesh operations and frozen codec retain their numerical implementation; package entry points expose only the dependencies needed here. The maintained joint Graph DiT/H1 implementation was copied from the current research source snapshot on 2026-09-05. The base Git commit alone did not contain all maintained changes; this repository's release commit identifies the complete published implementation.
+
+`graph_dit/metrics.py`, `predictions.py` and `performance.py` are copied unchanged from the common CylinderFlow implementation published at [MGN commit 7ef6fff](https://github.com/yan-borui/meshgraphnets-cylinderflow-stride8/tree/7ef6fff8068424e195438fafe84ff7bc170b305a). Data readers, shared media, runtime and offline scoring utilities derive from the same released adapter. Its numerical baseline model is not included. The four baseline source revisions are recorded in `cylinderflow_upstream.json`.
+
+New work in this release comprises H1/B1 configuration and finite campaign planning, independent GPU workers, Slurm dispatch, immutable schedule continuation, multi-EMA training and resume, frozen-representation packaging, initial-only physical prediction, unified checkpoint selection, reporting and executable acceptance. It is distributed under the same Apache-2.0 license.
+
+The Graph DiT design uses standard diffusion-transformer/AdaLN-Zero concepts. See [Scalable Diffusion Models with Transformers](https://arxiv.org/abs/2212.09748) and [official DiT code](https://github.com/facebookresearch/DiT). This release's recipe values and reported evidence are specific to CylinderFlow; they are not claims made by those authors.
+
+Dataset provenance and revision are linked in `README.md`; consult the data publisher and original MeshGraphNets dataset terms. The representation release asset contains architecture, weights, frozen normalization and scientific provenance only. Private conversations, account identifiers, training-host paths and raw archives are not part of this repository or the asset.

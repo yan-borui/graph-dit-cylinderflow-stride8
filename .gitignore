@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+artifacts/
+runs/
+campaigns/
+reports/
+*.h5
+*.chk
+*.pt
+*.npz
+*.log
+*.egg-info/
+.env
+.env.*
