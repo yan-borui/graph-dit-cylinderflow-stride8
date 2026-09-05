@@ -45,6 +45,7 @@ def configure_runtime(device: torch.device, precision: str) -> None:
     if int(os.environ.get("WORLD_SIZE", "1")) != 1:
         raise ValueError("this recipe needs one independent process per GPU, not DDP")
     torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", "2")))
+    torch.set_default_dtype(torch.float32)
     torch.set_float32_matmul_precision("highest")
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
@@ -246,6 +247,11 @@ def _train_locked(
             "code": code_identity(),
             "artifact_id": identity["artifact_id"],
             "device": str(device),
+            "precision": training["precision"],
+            "parameter_dtype": str(next(model.parameters()).dtype),
+            "float32_matmul_precision": torch.get_float32_matmul_precision(),
+            "tf32_matmul": torch.backends.cuda.matmul.allow_tf32,
+            "tf32_cudnn": torch.backends.cudnn.allow_tf32,
             "torch": str(torch.__version__),
             "debug": debug,
             "gpu": torch.cuda.get_device_name(device)

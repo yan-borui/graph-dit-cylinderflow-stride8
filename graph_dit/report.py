@@ -81,7 +81,7 @@ def report_run(run: Path, output: Path, *, movies: bool = False) -> None:
     lines = [
         f"Graph DiT | H1 | effective batch 1 | training seed {config['seed']} | {scope_label}",
         f"width={config['model']['width']}, blocks={config['model']['blocks']}, heads=8",
-        f"LR={config['training']['learning_rate']:g}, schedule={config['training']['schedule']}, precision={config['training']['precision']}",
+        f"LR={config['training']['learning_rate']:g}, floor={config['training']['min_learning_rate']:g}, schedule={config['training']['schedule']}, precision={config['training']['precision']}",
         f"schedule endpoint={config['training']['schedule_total_updates']:,}; allocated endpoint={status.get('stage_end_updates')}",
         f"Status: {status['state']}; completed updates={status.get('update')}",
         "Train 75-frame VGAE / fixed first-65-frame DiT; observed frame 0 -> future 1..64",

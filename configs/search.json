@@ -1,7 +1,7 @@
 {
-  "description": "54 independent H1/B1 candidates: three peak LRs, three first-drop times and six architectures. Every schedule drops tenfold by 150k, then every 50k to a 1e-6 floor; the fixed one-million-update plan is first allocated to 250k.",
+  "description": "72 independent FP32 H1/B1 candidates: three peak LRs, six architectures, and four schedules (tenfold drops starting at 100k/125k/150k, or slow cosine to 1M). All schedules use a 1e-7 floor; the fixed one-million-update plan is first allocated to 250k.",
   "learning_rates": [0.00001, 0.00003, 0.0001],
-  "schedules": ["late_decay"],
+  "schedules": ["late_decay", "cosine"],
   "decay_start_updates": [100000, 125000, 150000],
   "widths": [256, 384, 512],
   "depths": [8, 12],

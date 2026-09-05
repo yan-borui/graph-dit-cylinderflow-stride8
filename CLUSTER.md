@@ -6,32 +6,34 @@
 
 数据、共享表示和各run目录需在执行节点可见。代码与配置在整次campaign期间保持冻结；训练程序会复制所用Python源码，resume逐文件检查，拒绝代码或配方在途中变化。准备表示可以在一张卡上先完成；模型间共享文件，运行间不共享优化器或checkpoint。
 
-默认计划现为100k/125k/150k首次十倍快降。旧版已有作业使用原plan和`ad6ada9272c4aac92327454347fbf68879876a78`源码继续，新版计划写到`campaigns/rapid_screen`；不在正在使用的checkout中切换日程。
+默认计划统一FP32和1e-7的LR下限，包含100k/125k/150k首次十倍快降及慢cosine，共72个候选。旧版已有作业使用各自原plan和源码继续；新版计划写到`campaigns/fp32_screen`。单卡有效batch=1，每1000次optimizer update完成一个Train epoch；增加独立实验使用的GPU数不改变每个实验的step计数或LR日程。
+
+先在能访问共享盘的一张卡上执行`python prepare.py --data-dir /shared/cylinderflow/stride8 --autoencoder /shared/cylinderflow/vgae_stride8_epoch930.pt --artifacts /shared/cylinderflow/graph_dit_representation --device cuda:0`，完成数据、VGAE下载及共享缓存准备。计算节点无法联网时，可先在联网节点运行同一命令加`--download-only`，再在计算节点使用相同文件路径完成编码。
 
 ## Slurm示例
 
 在仓库根目录、激活好Python环境后提交。partition、account、时限、内存和并行额度按真实集群填写；脚本声明每个array task一张GPU。Slurm负责`CUDA_VISIBLE_DEVICES`。
 
 ```bash
-export PLAN="$PWD/campaigns/rapid_screen/plan.json"
+export PLAN="$PWD/campaigns/fp32_screen/plan.json"
 export DATA_DIR="/shared/cylinderflow/stride8"
 export ARTIFACTS="/shared/cylinderflow/graph_dit_representation"
 export PYTHON_BIN="$(command -v python)"
 export REPO_ROOT="$PWD"
 
-# 54个候选，最多同时运行16个。可按配额把%16改为%54。
-sbatch --array=0-53%16 --partition=YOUR_PARTITION --account=YOUR_ACCOUNT \
+# 72个候选，最多同时运行16个。可按配额修改%16，例如64张卡用%64。
+sbatch --array=0-71%16 --partition=YOUR_PARTITION --account=YOUR_ACCOUNT \
   --time=2-00:00:00 --mem=32G --export=ALL scripts/slurm_array.sh
 ```
 
 脚本在Slurm复制到spool目录后仍从`REPO_ROOT`或`SLURM_SUBMIT_DIR`找到源码。默认CPU线程2，申请4个CPU；`--mem`只影响主机内存申请，GPU显存由卡型号决定。先用512×12配置和最大Train粗图跑`graph_dit.preflight`。该检查包含多次更新、非零attention梯度、两套EMA和完整64帧采样解码。
 
-晋级后改`PLAN=.../campaigns/rapid_extended/plan.json`，6个作业使用`--array=0-5%6`；确认阶段3个作业使用`--array=0-2%3`。计划生成和晋级命令只写任务清单，提交命令才消耗集群资源。
+晋级后改`PLAN=.../campaigns/fp32_extended/plan.json`，6个作业使用`--array=0-5%6`；确认阶段3个作业使用`--array=0-2%3`。计划生成和晋级命令只写任务清单，提交命令才消耗集群资源。
 
 ## 单机队列
 
 ```bash
-python -m graph_dit.campaign run-local --plan campaigns/rapid_screen/plan.json \
+python -m graph_dit.campaign run-local --plan campaigns/fp32_screen/plan.json \
   --data-dir "$DATA_DIR" --artifacts "$ARTIFACTS" --gpus 0,1,2,3,4,5,6,7
 ```
 
@@ -43,9 +45,9 @@ python -m graph_dit.campaign run-local --plan campaigns/rapid_screen/plan.json \
 
 ```bash
 python -m graph_dit.train \
-  --config campaigns/rapid_screen/configs/h1_w256_d8_lr3e-05_late_decay_drop125000_seed0.json \
+  --config campaigns/fp32_screen/configs/h1_w256_d8_lr3e-05_late_decay_drop125000_seed0.json \
   --data-dir "$DATA_DIR" --artifacts "$ARTIFACTS" \
-  --output-dir campaigns/rapid_screen/runs/h1_w256_d8_lr3e-05_late_decay_drop125000_seed0 \
+  --output-dir campaigns/fp32_screen/runs/h1_w256_d8_lr3e-05_late_decay_drop125000_seed0 \
   --stage-end-updates 250000 --device cuda:0 --resume
 ```
 
@@ -58,7 +60,7 @@ python -m graph_dit.train \
 ## 运行目录
 
 ```text
-campaigns/rapid_screen/
+campaigns/fp32_screen/
   plan.json, configs/*.json       # 确切候选和预定分配
   launcher_logs/                  # 逐作业命令、设备分配、日志、exit
   runs/<candidate>/

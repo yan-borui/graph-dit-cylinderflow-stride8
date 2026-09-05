@@ -27,10 +27,19 @@ from .runtime import seed_everything, write_json
 
 ARTIFACT_FORMAT = "graph_dit.ae75.train_cache.v1"
 AE_ASSET = "vgae_stride8_epoch930.pt"
+AE_REPRESENTATION_ID = "cylinderflow_stride8_vgae_epoch930_release_v1"
+AE_REPOSITORY = "DingDong1921/graph-dit-cylinderflow-stride8"
+AE_REVISION = "8abcd6128a9896d6097d5dccb60cd0beaa4b852e"
 AE_RELEASE = (
     "https://github.com/yan-borui/graph-dit-cylinderflow-stride8/releases/download/representation-v1/"
     + AE_ASSET
 )
+AE_SOURCES = {
+    "huggingface": (
+        f"https://huggingface.co/{AE_REPOSITORY}/resolve/{AE_REVISION}/{AE_ASSET}"
+    ),
+    "github": AE_RELEASE,
+}
 
 
 def paths(data_dir: Path) -> tuple[Path, Path]:
@@ -53,23 +62,29 @@ def open_data(
     return data, graphs
 
 
-def fetch_autoencoder(output: Path) -> None:
+def fetch_autoencoder(output: Path, *, source: str = "huggingface") -> None:
+    """Fetch the pinned release, or reuse an existing matching checkpoint."""
+    if source not in AE_SOURCES:
+        raise ValueError(f"unknown autoencoder source: {source}")
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists():
-        raise FileExistsError(output)
-    temporary = output.with_suffix(".partial")
-    with (
-        urllib.request.urlopen(AE_RELEASE, timeout=60) as response,
-        temporary.open("xb") as stream,
-    ):
-        shutil.copyfileobj(response, stream)
+        temporary = output
+        print(f"Reusing {output}", flush=True)
+    else:
+        temporary = output.with_name(output.name + ".partial")
+        print(f"Downloading {AE_ASSET} from {AE_SOURCES[source]}", flush=True)
+        with (
+            urllib.request.urlopen(AE_SOURCES[source], timeout=120) as response,
+            temporary.open("wb") as stream,
+        ):
+            shutil.copyfileobj(response, stream, length=1024 * 1024)
     payload = torch.load(temporary, map_location="cpu", weights_only=True)
-    if (
-        payload.get("representation_id")
-        != "cylinderflow_stride8_vgae_epoch930_release_v1"
-    ):
+    if payload.get("representation_id") != AE_REPRESENTATION_ID:
         raise ValueError("unexpected released representation identity")
-    os.replace(temporary, output)
+    if payload.get("dataset_revision") != DATA_REVISION:
+        raise ValueError("released representation has a different dataset revision")
+    if temporary != output:
+        os.replace(temporary, output)
 
 
 def prepare(
@@ -209,6 +224,7 @@ def main() -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     fetch = commands.add_parser("fetch-ae")
     fetch.add_argument("--output", type=Path, required=True)
+    fetch.add_argument("--source", choices=tuple(AE_SOURCES), default="huggingface")
     build = commands.add_parser("prepare")
     build.add_argument("--data-dir", type=Path, required=True)
     build.add_argument("--autoencoder", type=Path, required=True)
@@ -216,7 +232,7 @@ def main() -> None:
     build.add_argument("--device", default="cuda:0")
     args = parser.parse_args()
     if args.command == "fetch-ae":
-        fetch_autoencoder(args.output)
+        fetch_autoencoder(args.output, source=args.source)
     else:
         prepare(args.data_dir, args.autoencoder, args.output_dir, args.device)
 

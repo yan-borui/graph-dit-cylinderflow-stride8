@@ -7,7 +7,7 @@
 训练每50k时点比较raw与两套EMA，所有已评分预测都存成共同NPZ。`selection.json`指出具体checkpoint和EMA类型。最终冻结后，每个独立training seed在同一固定EMA类型上选checkpoint，再运行：
 
 ```bash
-RUN=campaigns/rapid_confirm/runs/confirmation_seed101
+RUN=campaigns/fp32_confirm/runs/confirmation_seed101
 python -m graph_dit.evaluate --run "$RUN" \
   --data-dir "$DATA_DIR" --artifacts "$ARTIFACTS" --device cuda:0 \
   --scope validation --output-dir runs/validation_seed101

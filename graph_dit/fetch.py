@@ -10,27 +10,37 @@ from .data import DATA_REPOSITORY, DATA_REVISION, Dataset
 from .runtime import write_json
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", type=Path, required=True)
-    args = parser.parse_args()
-    args.output_dir.mkdir(parents=True, exist_ok=False)
+def fetch_data(output_dir: Path) -> Dataset:
+    """Fetch missing inputs, then validate the shared Train/Validation contract."""
+    output_dir.mkdir(parents=True, exist_ok=True)
     files = [
         "cylinderflow_stride8_75frames.h5",
         "cylinderflow_stride8_75frames_manifest.json",
     ]
     for name in files:
+        destination = output_dir / name
+        if destination.exists():
+            print(f"Reusing {destination}", flush=True)
+            continue
         folder = "data" if name.endswith(".h5") else "metadata"
         url = f"https://huggingface.co/datasets/{DATA_REPOSITORY}/resolve/{DATA_REVISION}/{folder}/{name}"
-        temporary = args.output_dir / (name + ".partial")
+        temporary = output_dir / (name + ".partial")
         print(f"Downloading {name} from pinned revision {DATA_REVISION}", flush=True)
         with urllib.request.urlopen(url, timeout=120) as response:
-            with temporary.open("xb") as stream:
+            with temporary.open("wb") as stream:
                 shutil.copyfileobj(response, stream, length=1024 * 1024)
-        os.replace(temporary, args.output_dir / name)
-    dataset = Dataset(args.output_dir / files[0], args.output_dir / files[1])
-    write_json(args.output_dir / "download_identity.json", dataset.identity())
+        os.replace(temporary, destination)
+    dataset = Dataset(output_dir / files[0], output_dir / files[1])
+    write_json(output_dir / "download_identity.json", dataset.identity())
     print("Train/Validation contract verified", flush=True)
+    return dataset
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    args = parser.parse_args()
+    fetch_data(args.output_dir)
 
 
 if __name__ == "__main__":

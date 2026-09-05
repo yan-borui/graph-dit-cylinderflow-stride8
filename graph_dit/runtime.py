@@ -142,7 +142,8 @@ def measured(timings: dict, name: str, device: torch.device, enabled: bool = Tru
 
 def autocast(device: torch.device, precision: str):
     if precision == "fp32":
-        return contextlib.nullcontext()
+        # Disable even an enclosing AMP context for the FP32 training recipe.
+        return torch.autocast(device.type, enabled=False)
     if precision == "fp16" and device.type != "cuda":
         raise ValueError("fp16 training requires CUDA")
     return torch.autocast(

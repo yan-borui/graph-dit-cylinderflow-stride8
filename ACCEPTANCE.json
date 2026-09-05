@@ -1,4 +1,10 @@
 {
+  "code_update_20260906": {
+    "scope": "FP32 runtime settings, 1e-7 LR floor, fast-drop plus slow-cosine search, and one-command resource preparation",
+    "default_screen_configurations": 72,
+    "software_tests": "not run, as requested",
+    "historical_results_scope": "The dated acceptance results below describe the previous source and recipe; they do not validate this update"
+  },
   "observed_date": "2026-09-05",
   "scope": "Software delivery acceptance on Linux CPU, plus read-only verification of the released data and selected VGAE",
   "rapid_lr_revision": {
