@@ -14,7 +14,6 @@ import numpy as np
 
 from .campaign import leaderboard
 from .runtime import read_jsonl, write_json
-from .media import render
 
 
 def report_run(run: Path, output: Path, *, movies: bool = False) -> None:
@@ -47,7 +46,10 @@ def report_run(run: Path, output: Path, *, movies: bool = False) -> None:
         axis.plot(
             [row["update"] for row in rows], [row[name] for row in rows], linewidth=0.9
         )
-        axis.set(title=title, xlabel="Optimizer updates = examples (B1)")
+        axis.set(
+            title=title,
+            xlabel=f"Optimizer updates (global batch {config['training']['effective_batch']})",
+        )
         axis.grid(alpha=0.2)
         if name != "loss":
             axis.set_yscale("log")
@@ -79,11 +81,11 @@ def report_run(run: Path, output: Path, *, movies: bool = False) -> None:
         else None
     )
     lines = [
-        f"Graph DiT | H1 | effective batch 1 | training seed {config['seed']} | {scope_label}",
+        f"Graph DiT | H1 | effective batch {config['training']['effective_batch']} | training seed {config['seed']} | {scope_label}",
         f"width={config['model']['width']}, blocks={config['model']['blocks']}, heads=8",
         f"LR={config['training']['learning_rate']:g}, floor={config['training']['min_learning_rate']:g}, schedule={config['training']['schedule']}, precision={config['training']['precision']}",
         f"schedule endpoint={config['training']['schedule_total_updates']:,}; allocated endpoint={status.get('stage_end_updates')}",
-        f"Status: {status['state']}; completed updates={status.get('update')}",
+        f"Status: {status['state']}; completed updates={status.get('update')}; windows={status.get('examples_seen', status.get('update'))}",
         "Train 75-frame VGAE / fixed first-65-frame DiT; observed frame 0 -> future 1..64",
         "dt=0.08; common physical evaluator; Test sealed",
         f"Selected: {selection['weights']} at update {selection['update']}, score={selection['score']}, failed clips={selection['failed_clips']}"
@@ -92,6 +94,8 @@ def report_run(run: Path, output: Path, *, movies: bool = False) -> None:
         f"Error: {status.get('error', 'none recorded')}",
     ]
     training = config["training"]
+    if status.get("endpoint_scores"):
+        lines.append(f"Allocated-endpoint scores: {status['endpoint_scores']}")
     if training["schedule"] == "late_decay":
         lines.insert(
             3,
@@ -113,7 +117,7 @@ def report_run(run: Path, output: Path, *, movies: bool = False) -> None:
             "retention": "Checkpoints, all predictions, candidates, failed attempts and source remain with the experiment owner.",
         },
     )
-    if selection:
+    if selection and selection.get("summary"):
         summary_file = run / selection["summary"]
         summary = json.loads(summary_file.read_text())
         ordered = sorted(
@@ -121,6 +125,8 @@ def report_run(run: Path, output: Path, *, movies: bool = False) -> None:
             key=lambda row: row["uv_relative_rmse"],
         )
         if movies and ordered:
+            from .media import render
+
             positions = {
                 "median": int(round((len(ordered) - 1) * 0.5)),
                 "p90": int(round((len(ordered) - 1) * 0.9)),

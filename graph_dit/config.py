@@ -4,14 +4,57 @@ from __future__ import annotations
 
 import json
 import math
+from copy import deepcopy
 from pathlib import Path
 
 from . import TRAINING_PROTOCOL
+from .physical_monitor import validate_policy
 
 
 def load_config(file_name: str | Path) -> dict:
     config = json.loads(Path(file_name).read_text(encoding="utf-8"))
+    config = resolve_window_config(config)
     validate_config(config)
+    return config
+
+
+def resolve_window_config(config: dict) -> dict:
+    """Resolve an explicit global-window clock without reinterpreting old updates."""
+    config = deepcopy(config)
+    clock = config.get("window_schedule")
+    if clock is None:
+        return config
+    world = config.get("distributed", {}).get("world_size", 1)
+    if not isinstance(world, int) or isinstance(world, bool) or world < 1:
+        raise ValueError("world_size must be a positive integer")
+    training = config["training"]
+    batch = world * training["microbatch"] * training["gradient_accumulation"]
+    mappings = {
+        "budget_windows": (training, "budget_updates"),
+        "total_windows": (training, "schedule_total_updates"),
+        "warmup_windows": (training, "warmup_updates"),
+        "checkpoint_every_windows": (training, "checkpoint_every_updates"),
+        "recovery_every_windows": (training, "recovery_every_updates"),
+        "log_every_windows": (training, "log_every_updates"),
+        "validation_every_windows": (config["validation"], "every_updates"),
+    }
+    for name, (destination, key) in mappings.items():
+        value = clock[name]
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value < 0
+            or value % batch
+        ):
+            raise ValueError(f"{name} must be divisible by effective batch {batch}")
+        resolved = value // batch
+        if config.get("window_schedule_resolved") and destination.get(key) != resolved:
+            raise ValueError(f"resolved {key} conflicts with {name}")
+        destination[key] = resolved
+    training["effective_batch"] = batch
+    if not 0 < training["budget_updates"] <= training["schedule_total_updates"]:
+        raise ValueError("window budget must lie within the cosine horizon")
+    config["window_schedule_resolved"] = True
     return config
 
 
@@ -35,13 +78,24 @@ def validate_config(config: dict) -> None:
         raise ValueError(
             "H1, eight heads, joint64 and the frozen representation must stay fixed"
         )
-    if any(
-        training.get(key) != 1
-        for key in ("effective_batch", "microbatch", "gradient_accumulation")
+    world = config.get("distributed", {}).get("world_size", 1)
+    if not isinstance(world, int) or isinstance(world, bool) or world < 1:
+        raise ValueError("world_size must be a positive integer")
+    if (
+        training.get("microbatch") != 1
+        or training.get("gradient_accumulation") != 1
+        or training.get("effective_batch") != world
     ):
         raise ValueError(
-            "microbatch, accumulation and effective batch must all equal one"
+            "H1 requires one window per rank and effective_batch == world_size"
         )
+    if config.get("window_schedule") is not None:
+        if config != resolve_window_config(config):
+            raise ValueError("resolve the window schedule before training")
+    if training.get("ema_decay_unit", "update") not in {"update", "window"}:
+        raise ValueError("EMA decay unit must be update or window")
+    if world > 1 and validation.get("early_stopping", {}).get("enabled", False):
+        raise ValueError("the distributed screening protocol disables early stopping")
     if model["width"] < 8 or model["width"] % 8 or model["blocks"] < 1:
         raise ValueError(
             "width must be a positive multiple of eight; depth must be positive"
@@ -85,6 +139,7 @@ def validate_config(config: dict) -> None:
         )
     if validation["every_updates"] < 1 or config["seed"] < 0:
         raise ValueError("invalid Validation interval or training seed")
+    validate_policy(validation)
 
 
 def learning_rate(config: dict, update: int) -> float:

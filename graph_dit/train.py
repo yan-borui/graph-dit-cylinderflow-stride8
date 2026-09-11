@@ -20,6 +20,7 @@ from dgn4cfd.nn.diffusion.models.graph_video_dit import GraphVideoDiT
 from .config import load_config, validate_config, learning_rate
 from .representation import load_artifacts
 from .metrics import selection_key
+from .physical_monitor import PhysicalMonitor
 from .runtime import (
     ROOT,
     acquire_run_lock,
@@ -41,8 +42,10 @@ from .runtime import (
 CHECKPOINT_FORMAT = "graph_dit.h1_b1.training.v1"
 
 
-def configure_runtime(device: torch.device, precision: str) -> None:
-    if int(os.environ.get("WORLD_SIZE", "1")) != 1:
+def configure_runtime(
+    device: torch.device, precision: str, *, allow_distributed: bool = False
+) -> None:
+    if not allow_distributed and int(os.environ.get("WORLD_SIZE", "1")) != 1:
         raise ValueError("this recipe needs one independent process per GPU, not DDP")
     torch.set_num_threads(int(os.environ.get("OMP_NUM_THREADS", "2")))
     torch.set_default_dtype(torch.float32)
@@ -53,6 +56,7 @@ def configure_runtime(device: torch.device, precision: str) -> None:
     if device.type == "cuda":
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA is unavailable")
+        torch.cuda.set_device(device)
         if precision == "bf16" and not torch.cuda.is_bf16_supported():
             raise ValueError("this device does not support BF16")
         # H1 uses an additive dense mask. Record actual runtime; do not claim sparse speedup.
@@ -65,8 +69,10 @@ def configure_runtime(device: torch.device, precision: str) -> None:
 class EMA:
     """FP32 device-resident averages, updated once after each optimizer step."""
 
-    def __init__(self, model: GraphVideoDiT, decays: list[float]):
-        self.decays = {f"ema_{decay:g}": decay for decay in decays}
+    def __init__(
+        self, model: GraphVideoDiT, decays: list[float], *, windows_per_update: int = 1
+    ):
+        self.decays = {f"ema_{decay:g}": decay**windows_per_update for decay in decays}
         self.states = {
             name: {
                 key: value.detach().clone() for key, value in model.state_dict().items()
@@ -151,6 +157,19 @@ def train_run(
     debug: bool = False,
 ) -> dict:
     validate_config(config)
+    if config.get("distributed", {}).get("world_size", 1) > 1:
+        from .ddp_train import train_distributed
+
+        return train_distributed(
+            config,
+            artifacts,
+            data_dir,
+            run,
+            stage_end,
+            device_name,
+            resume=resume,
+            debug=debug,
+        )
     training = config["training"]
     if not 1 <= stage_end <= training["schedule_total_updates"]:
         raise ValueError("stage endpoint must lie within the immutable LR plan")
@@ -238,6 +257,9 @@ def _train_locked(
     attempt = len(list(run.glob("attempt_*"))) + 1
     attempt_dir = run / f"attempt_{attempt:03d}"
     attempt_dir.mkdir(exist_ok=False)
+    physical_monitor = None
+    if config["validation"].get("early_stopping", {}).get("enabled", False):
+        physical_monitor = PhysicalMonitor(run, config["validation"], update)
     write_json(
         attempt_dir / "launch.json",
         {
@@ -275,7 +297,9 @@ def _train_locked(
     def checkpoint(destination: Path) -> dict:
         payload = {
             "format": CHECKPOINT_FORMAT,
-            "checkpoint_id": str(uuid.uuid4()),
+            "checkpoint_id": f"{run_id}:{update}"
+            if physical_monitor
+            else str(uuid.uuid4()),
             "run_id": run_id,
             "model": cpu_state(model.state_dict()),
             "ema": {name: cpu_state(state) for name, state in ema.states.items()},
@@ -291,6 +315,8 @@ def _train_locked(
             "elapsed_seconds": elapsed_before + time.perf_counter() - started,
             "costs": dict(costs),
         }
+        if physical_monitor is not None:
+            payload["physical_monitor_state"] = deepcopy(physical_monitor.state)
         saving_started = time.perf_counter()
         save_checkpoint(destination, payload)
         costs["checkpoint_io_seconds"] += time.perf_counter() - saving_started
@@ -303,9 +329,16 @@ def _train_locked(
             snapshot = checkpoint(checkpoint_file)
         else:
             snapshot = load_checkpoint(checkpoint_file)
-        candidates = read_jsonl(run / "candidates.jsonl")
+        candidates = (
+            physical_monitor.candidates(update)
+            if physical_monitor is not None
+            else read_jsonl(run / "candidates.jsonl")
+        )
         raw = cpu_state(model.state_dict())
         saved_rng = rng_state()
+        saved_generator = generator.get_state()
+        saved_mode = model.training
+        indices = monitor_indices(predictor.data.splits["validation"])
         try:
             for weights in config["validation"]["weights"]:
                 if any(
@@ -333,10 +366,11 @@ def _train_locked(
                 validation_started = time.perf_counter()
                 summary = evaluate_model(
                     predictor,
-                    monitor_indices(predictor.data.splits["validation"]),
+                    indices,
                     config["validation"]["sampling_seeds"],
                     destination,
                     provenance,
+                    fail_on_runtime_error=physical_monitor is not None,
                 )
                 costs["validation_seconds"] += time.perf_counter() - validation_started
                 row = {
@@ -344,11 +378,16 @@ def _train_locked(
                     "checkpoint": checkpoint_relative,
                     "summary": str((destination / "summary.json").relative_to(run)),
                     "failed_clips": summary["failed_clips"],
+                    "clip_count": summary["clip_count"],
+                    "trajectory_count": summary["trajectory_count"],
                     "score": summary["selection_uv_relative_rmse"],
                     "selection_key": list(selection_key(summary, update)),
                     "complete_stage": False,
                 }
-                append_json(run / "candidates.jsonl", row)
+                if physical_monitor is not None:
+                    physical_monitor.store_candidate(row)
+                else:
+                    append_json(run / "candidates.jsonl", row)
                 candidates.append(row)
                 print(
                     json.dumps(
@@ -362,11 +401,47 @@ def _train_locked(
                     ),
                     flush=True,
                 )
+            if physical_monitor is not None:
+                physical_monitor.complete(
+                    update,
+                    snapshot["checkpoint_id"],
+                    len(indices) * len(config["validation"]["sampling_seeds"]),
+                    len(indices),
+                )
+        except BaseException as failure:
+            if physical_monitor is not None:
+                physical_monitor.error(update, attempt, failure)
+            raise
         finally:
             model.load_state_dict(raw)
-            model.train()
+            model.train(saved_mode)
             restore_rng(saved_rng)
-        if candidates:
+            generator.set_state(saved_generator)
+        if physical_monitor is not None:
+            best = physical_monitor.state["best"]
+            write_json(
+                selected_file,
+                best
+                or {
+                    "weights": None,
+                    "update": None,
+                    "checkpoint": None,
+                    "score": None,
+                    "failed_clips": None,
+                },
+            )
+            checkpoint(run / "recovery_latest.pt")
+            print(
+                json.dumps(
+                    {
+                        "event": "physical_round",
+                        "update": update,
+                        "physical_monitor_state": physical_monitor.state,
+                    }
+                ),
+                flush=True,
+            )
+        elif candidates:
             best = min(
                 candidates,
                 key=lambda row: (
@@ -389,7 +464,10 @@ def _train_locked(
             ):
                 validate_current()
             current_epoch, permutation = -1, None
-            while update < stage_end:
+            while update < stage_end and not (
+                physical_monitor is not None
+                and physical_monitor.state["stop_requested"]
+            ):
                 step_started = time.perf_counter()
                 epoch, offset = divmod(update, len(indices))
                 if epoch != current_epoch:
@@ -469,8 +547,16 @@ def _train_locked(
         selected = json.loads(selected_file.read_text())
         selected.update(complete_stage=True, stage_end_updates=stage_end)
         write_json(selected_file, selected)
+        stopped = (
+            physical_monitor is not None
+            and physical_monitor.state["stop_requested"]
+            and update < stage_end
+        )
         result = {
-            "state": "complete",
+            "state": "early_stopped" if stopped else "complete",
+            "termination_reason": "physical_validation_plateau"
+            if stopped
+            else "allocated_budget",
             "update": update,
             "stage_end_updates": stage_end,
             "elapsed_seconds": elapsed_before + time.perf_counter() - started,
@@ -488,6 +574,23 @@ def _train_locked(
             else None,
             **peak_memory(device),
         }
+        if physical_monitor is not None:
+            result["physical_monitor_state"] = physical_monitor.state
+            write_json(
+                run / "checkpoint_inventory.json",
+                {
+                    "updates": sorted(
+                        int(item.stem.split("_")[-1])
+                        for item in (run / "checkpoints").glob("update_*.pt")
+                        if int(item.stem.split("_")[-1]) <= update
+                    ),
+                    "last_checkpoint": f"checkpoints/update_{update:09d}.pt",
+                    "best_physical_checkpoint": selected.get("checkpoint"),
+                    "best_physical_weights": selected.get("weights"),
+                    "best_physical_score": selected.get("score"),
+                    "termination_reason": result["termination_reason"],
+                },
+            )
         write_json(run / "status.json", result)
         (attempt_dir / "exit_code").write_text("0\n")
         return result

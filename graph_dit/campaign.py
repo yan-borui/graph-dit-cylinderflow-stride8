@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 
-from .config import load_config, validate_config
+from .config import load_config, validate_config, resolve_window_config
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -33,6 +33,8 @@ def write(file_name: Path, payload: dict) -> None:
 
 def make_plan(base_file: Path, search_file: Path, output: Path) -> dict:
     base, search = load_config(base_file), read(search_file)
+    if "candidates" in search:
+        return make_window_plan(base, search, output)
     output.mkdir(parents=True, exist_ok=False)
     tasks = []
     schedules = []
@@ -81,6 +83,80 @@ def make_plan(base_file: Path, search_file: Path, output: Path) -> dict:
         "search": search,
         "requested_optimizer_updates": sum(task["stage_end_updates"] for task in tasks),
         "parallelism": "one independent GPU/process per task; effective batch one",
+    }
+    write(output / "plan.json", plan)
+    return plan
+
+
+def make_window_plan(base: dict, search: dict, output: Path) -> dict:
+    """Materialize only explicitly listed candidates, with both training clocks."""
+    tasks, configs = [], []
+    world = search["world_size"]
+    for candidate in search["candidates"]:
+        config = deepcopy(base)
+        config["seed"] = search["screen_seed"]
+        config["distributed"] = {"world_size": world}
+        config["model"].update(width=candidate["width"], blocks=candidate["depth"])
+        config["training"].update(
+            learning_rate=candidate["learning_rate"],
+            min_learning_rate=search["min_learning_rate"],
+            schedule="cosine",
+            precision="fp32",
+            microbatch=1,
+            gradient_accumulation=1,
+            ema_decay_unit="window",
+        )
+        config["validation"]["early_stopping"] = {
+            "enabled": False,
+            "min_updates": 500000,
+            "patience_evaluations": 20,
+        }
+        config["window_schedule"] = {
+            "budget_windows": search["budget_windows"],
+            "total_windows": candidate["schedule_total_windows"],
+            **{
+                key: search[key]
+                for key in (
+                    "warmup_windows",
+                    "checkpoint_every_windows",
+                    "recovery_every_windows",
+                    "log_every_windows",
+                    "validation_every_windows",
+                )
+            },
+        }
+        config = resolve_window_config(config)
+        validate_config(config)
+        name = (
+            f"h1_w{candidate['width']}_d{candidate['depth']}_lr{candidate['learning_rate']:g}"
+            f"_cosine{candidate['schedule_total_windows']}_b{world}_seed{config['seed']}"
+        )
+        tasks.append(
+            {
+                "id": name,
+                "config": f"configs/{name}.json",
+                "run": f"runs/{name}",
+                "stage_end_updates": config["training"]["budget_updates"],
+                "stage_end_windows": search["budget_windows"],
+                "world_size": world,
+                "resume": False,
+            }
+        )
+        configs.append(config)
+    if not tasks or len({item["id"] for item in tasks}) != len(tasks):
+        raise ValueError("empty or duplicate explicit search candidates")
+    output.mkdir(parents=True, exist_ok=False)
+    for task, config in zip(tasks, configs):
+        write(output / task["config"], config)
+    plan = {
+        "format": "graph_dit.campaign.v2",
+        "phase": "screen",
+        "tasks": tasks,
+        "search": search,
+        "requested_optimizer_updates": sum(t["stage_end_updates"] for t in tasks),
+        "requested_training_windows": sum(t["stage_end_windows"] for t in tasks),
+        "parallelism": f"{world} GPUs per task; one window per rank",
+        "automatic_promotion": False,
     }
     write(output / "plan.json", plan)
     return plan
@@ -138,6 +214,18 @@ def worker(
     ]
     if resume:
         command.append("--resume")
+    world = config.get("distributed", {}).get("world_size", 1)
+    if world > 1:
+        command = [
+            sys.executable,
+            "-m",
+            "torch.distributed.run",
+            "--standalone",
+            f"--nproc-per-node={world}",
+            "--max-restarts=0",
+            "--module",
+            *command[2:],
+        ]
     logs = plan_file.parent / "launcher_logs"
     logs.mkdir(exist_ok=True)
     attempt = 1
@@ -159,6 +247,17 @@ def worker(
             command, stdout=log, stderr=subprocess.STDOUT, cwd=ROOT
         ).returncode
     record.with_suffix(".exit").write_text(f"{rc}\n")
+    if rc and run.is_dir():
+        current = read(run / "status.json") if (run / "status.json").exists() else {}
+        write(
+            run / "status.json",
+            {
+                **current,
+                "state": "failed",
+                "launcher_exit_code": rc,
+                "launcher_log": str(record.with_suffix(".log")),
+            },
+        )
     write(
         logs / f"{index:03d}_latest_status.json",
         {
@@ -175,8 +274,21 @@ def worker(
 def run_local(
     plan_file: Path, data_dir: Path, artifacts: Path, gpus: list[str], resume: bool
 ) -> int:
-    if not gpus or len(gpus) != len(set(gpus)):
+    if (
+        not gpus
+        or any(not item.strip() for item in gpus)
+        or len(gpus) != len(set(gpus))
+    ):
         raise ValueError("provide unique GPU identifiers allocated to this campaign")
+    worlds = {task.get("world_size", 1) for task in read(plan_file)["tasks"]}
+    if len(worlds) != 1:
+        raise ValueError("run-local requires a uniform per-task GPU allocation")
+    world = worlds.pop()
+    if len(gpus) % world:
+        raise ValueError("allocated GPU identifiers must form complete task groups")
+    groups = [
+        ",".join(gpus[start : start + world]) for start in range(0, len(gpus), world)
+    ]
     pending = queue.Queue()
     for index in range(len(read(plan_file)["tasks"])):
         pending.put(index)
@@ -212,8 +324,8 @@ def run_local(
             codes.append(subprocess.run(command, env=env, cwd=ROOT).returncode)
             pending.task_done()
 
-    with ThreadPoolExecutor(max_workers=len(gpus)) as pool:
-        results = list(pool.map(gpu_worker, gpus))
+    with ThreadPoolExecutor(max_workers=len(groups)) as pool:
+        results = list(pool.map(gpu_worker, groups))
     return int(any(code for group in results for code in group))
 
 
@@ -406,7 +518,7 @@ def main() -> None:
             sub.add_argument(
                 "--gpus",
                 required=True,
-                help="allocated CUDA device IDs/UUIDs, one independent job per device",
+                help="allocated CUDA IDs/UUIDs, grouped by the plan's GPUs per task",
             )
         if name in ("promote", "freeze"):
             sub.add_argument("--output-dir", type=Path, required=True)

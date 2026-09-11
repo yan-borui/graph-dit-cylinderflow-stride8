@@ -29,8 +29,21 @@ def main() -> None:
         raise ValueError(
             "at least four updates are needed beyond AdaLN-Zero initialization"
         )
-    args.output_dir.mkdir(parents=True, exist_ok=False)
     config = load_config(args.config)
+    if config.get("distributed", {}).get("world_size", 1) > 1:
+        from .train import train_run
+
+        config["preflight_max_graph"] = True
+        train_run(
+            config,
+            args.artifacts,
+            args.data_dir,
+            args.output_dir,
+            args.updates,
+            args.device,
+        )
+        return
+    args.output_dir.mkdir(parents=True, exist_ok=False)
     identity = load_artifacts(args.artifacts)
     device = torch.device(args.device)
     configure_runtime(device, config["training"]["precision"])
@@ -41,6 +54,9 @@ def main() -> None:
         model.parameters(), weight_decay=config["training"]["weight_decay"]
     )
     ema = EMA(model, config["training"]["ema_decays"])
+    initial_parameters = {
+        name: value.detach().cpu().clone() for name, value in model.named_parameters()
+    }
     with h5py.File(args.artifacts / "train_latents.h5", "r") as cache:
         index = max(
             (int(value) for value in cache["sim_indices"]),
@@ -77,10 +93,31 @@ def main() -> None:
         raise RuntimeError(
             "preflight never reached a nonzero attention gradient after zero initialization"
         )
+    parameter_changes = {}
+    for name, state in {"raw": model.state_dict(), **ema.states}.items():
+        changes = [
+            float((state[key].detach().cpu() - value).abs().max())
+            for key, value in initial_parameters.items()
+        ]
+        if not any(value > 0 for value in changes):
+            raise RuntimeError(f"preflight did not update {name} parameters")
+        if not all(torch.isfinite(state[key]).all() for key in initial_parameters):
+            raise FloatingPointError(f"nonfinite {name} parameters")
+        dtypes = sorted({str(state[key].dtype) for key in initial_parameters})
+        if config["training"]["precision"] == "fp32" and dtypes != ["torch.float32"]:
+            raise RuntimeError(f"unexpected {name} parameter precision: {dtypes}")
+        parameter_changes[name] = {
+            "max_absolute_change": max(changes),
+            "parameter_dtypes": dtypes,
+        }
     predictor = Predictor(
         model, args.artifacts, args.data_dir, device, config["training"]["precision"]
     )
+    synchronize(device)
+    prediction_started = time.perf_counter()
     prediction, _ = predictor.predict(predictor.load_case(index), 0)
+    synchronize(device)
+    prediction_seconds = time.perf_counter() - prediction_started
     if not np.isfinite(prediction).all() or prediction.shape[0] != 65:
         raise FloatingPointError("complete decoded 64-frame forecast is invalid")
     write_json(
@@ -94,6 +131,10 @@ def main() -> None:
                 np.mean([row["seconds"] for row in records[2:]])
             ),
             "forecast_shape": list(prediction.shape),
+            "forecast_seconds": prediction_seconds,
+            "parameter_changes": parameter_changes,
+            "tf32_matmul": torch.backends.cuda.matmul.allow_tf32,
+            "tf32_cudnn": torch.backends.cudnn.allow_tf32,
             "device": str(device),
             "gpu": torch.cuda.get_device_name(device)
             if device.type == "cuda"

@@ -83,7 +83,43 @@ cosine在1M的最终LR为1e-7；它为每组峰值与宽深组合生成一个候
 
 该方案参考[官方DiT训练代码](https://github.com/facebookresearch/DiT/blob/main/train.py)的EMA做法，以及[EDM2对训练动态和EMA的研究](https://arxiv.org/abs/2312.02696)。候选值是本任务的待验证设计，原论文不保证它们在CylinderFlow上最优。
 
+## 2026-09-12 四卡窗口预算搜索
+
+[FOUR_GPU.md](FOUR_GPU.md) 与 `configs/search_4gpu_12_20260911.json` 定义本轮独立配方：
+w512-d16/1e-4 以及 w512-d24/1e-4、5e-4、1e-3，交叉 250k/500k/1M 全局窗口 cosine。
+每组四卡、global B4，分配 250k 窗口即 62,500 updates；最低 LR **1e-6**，warmup
+4k 窗口。EMA0.999/0.9999 按窗口计，实际每更新衰减取四次方。每 50k 窗口评价
+Validation-24 × 三个采样 × raw/两套 EMA，关闭早停和自动晋级。原配方继续使用其
+既有更新单位、EMA 单位与 LR 下限，历史运行记录不改写。
+
 ## 选择与预算
+
+### 4090 单次 cosine + EMA 运行（2026-09-08）
+
+`configs/h1_w512_cosine_ema_4090_20260908a.json` 固定 seed0、H1、width512、depth8、FP32、
+峰值1e-4、warmup4000、1M cosine终点与1e-7下限。每5000updates同时保存独立checkpoint和
+滚动恢复点，并评价Validation-24 × 三个sampling labels × raw/EMA0.999/EMA0.9999，共216段。
+该运行的间隔与终止规则由此独立配置指定。
+
+可选 `validation.early_stopping` 缺省关闭。本配置明确启用 `min_updates=500000`、
+`patience_evaluations=20`。每种权重必须72段全部有效才可选优；三种权重的最低有效UV分数
+构成一轮结果。主指标严格下降即更新全局最佳并清零等待；持平、变差或三种权重全数值失败
+只累计一轮。500k前照常累计，当前update达到500k且连续20轮无改善时正常 `early_stopped`。
+提前结束保留原1M学习率日程。结论限于用于选择的Validation-24，Test封存。
+
+评估程序异常保留失败目录与恢复点、打断等待并以故障状态退出；同配置 `--resume` 时按
+恢复update重放原子记录，复用已完成权重的评价，补齐当前轮。每轮结束后恢复raw权重、模型
+模式与训练随机数。`physical_monitor/state.json` 保存最佳与等待，`selection.json` 指向
+最佳checkpoint和raw/EMA类型；终态 `checkpoint_inventory.json` 同时索引最后和物理最佳
+checkpoint，`status.json` 区分早停与跑满预算。全部checkpoint、预测及失败证据保留。
+
+新增早停验收复用已有CPU smoke产物：
+
+```bash
+python -m graph_dit.early_stop_acceptance --smoke-root runs/cpu_smoke --output-dir runs/early_stop_acceptance
+```
+
+以下搜索流程仍使用各自冻结配置及预算。
 
 Checkpoint先按失败clip数、完整轨迹平均UV relative RMSE、update升序排序；完全相同再以预定weights顺序打破平局。EMA在screen/extend参与同等机会的选择；freeze后固定所选raw/EMA类型，独立训练种子只在这个固定类型的共同checkpoint时点选优。候选的预测、标量结果和失败分母完整留存。
 

@@ -1,0 +1,85 @@
+{
+  "world_size": 4,
+  "screen_seed": 0,
+  "budget_windows": 250000,
+  "warmup_windows": 4000,
+  "checkpoint_every_windows": 50000,
+  "recovery_every_windows": 5000,
+  "log_every_windows": 100,
+  "validation_every_windows": 50000,
+  "min_learning_rate": 0.000001,
+  "candidates": [
+    {
+      "width": 512,
+      "depth": 16,
+      "learning_rate": 0.0001,
+      "schedule_total_windows": 250000
+    },
+    {
+      "width": 512,
+      "depth": 16,
+      "learning_rate": 0.0001,
+      "schedule_total_windows": 500000
+    },
+    {
+      "width": 512,
+      "depth": 16,
+      "learning_rate": 0.0001,
+      "schedule_total_windows": 1000000
+    },
+    {
+      "width": 512,
+      "depth": 24,
+      "learning_rate": 0.0001,
+      "schedule_total_windows": 250000
+    },
+    {
+      "width": 512,
+      "depth": 24,
+      "learning_rate": 0.0001,
+      "schedule_total_windows": 500000
+    },
+    {
+      "width": 512,
+      "depth": 24,
+      "learning_rate": 0.0001,
+      "schedule_total_windows": 1000000
+    },
+    {
+      "width": 512,
+      "depth": 24,
+      "learning_rate": 0.0005,
+      "schedule_total_windows": 250000
+    },
+    {
+      "width": 512,
+      "depth": 24,
+      "learning_rate": 0.0005,
+      "schedule_total_windows": 500000
+    },
+    {
+      "width": 512,
+      "depth": 24,
+      "learning_rate": 0.0005,
+      "schedule_total_windows": 1000000
+    },
+    {
+      "width": 512,
+      "depth": 24,
+      "learning_rate": 0.001,
+      "schedule_total_windows": 250000
+    },
+    {
+      "width": 512,
+      "depth": 24,
+      "learning_rate": 0.001,
+      "schedule_total_windows": 500000
+    },
+    {
+      "width": 512,
+      "depth": 24,
+      "learning_rate": 0.001,
+      "schedule_total_windows": 1000000
+    }
+  ]
+}

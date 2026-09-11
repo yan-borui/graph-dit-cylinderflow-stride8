@@ -1,6 +1,10 @@
-# Graph DiT · CylinderFlow · H1 / B1
+# Graph DiT · CylinderFlow · H1
 
-给定一帧真实流场，在 VGAE 的粗图上联合生成未来 64 帧。这个独立仓库交付当前 Graph DiT、冻结表示、训练配方、并行调参、恢复、共同评价和报告脚本。**固定 H1 attention、microbatch=1、梯度累积=1、effective batch=1；多卡用于独立实验并行。**
+**2026-09-12 四卡搜索入口：**[12 组 H1 四卡配置与启动说明](FOUR_GPU.md)。每组 250k
+全局窗口、B4、62,500 updates，比较 250k/500k/1M 窗口 cosine，最低 LR 1e-6。
+下文保留原 B1 搜索的入口和复现说明；新四卡方案用独立配置与恢复格式。
+
+给定一帧真实流场，在 VGAE 的粗图上联合生成未来 64 帧。这个独立仓库交付当前 Graph DiT、冻结表示、训练配方、并行调参、恢复、共同评价和报告脚本。**原单卡配方固定 H1 attention、microbatch=1、梯度累积=1、effective batch=1；原 72 组搜索用多卡并行独立实验。**
 
 本仓库提供可运行的搜索方案。`configs/base.json` 是起跑配方；经过完整搜索和独立训练复核以后，`freeze` 才会产生 `locked_recipe.json`。当前没有把尚未执行的候选称为最佳模型。
 

@@ -21,7 +21,7 @@ from dgn4cfd.nn.diffusion.graph_window_codec import FrozenUVPLatentCodec
 from dgn4cfd.nn.diffusion.models.graph_video_dit import GraphVideoDiT
 from . import EVALUATOR_VERSION
 from .data import Dataset
-from .metrics import compute_metrics, summarize_trajectories, selection_key
+from .metrics import compute_metrics, summarize_trajectories
 from .predictions import save_prediction, writeback_velocity, boundary_metrics
 from .representation import paths, load_artifacts
 from .runtime import (
@@ -149,17 +149,43 @@ def evaluate_model(
     seeds: list[int],
     output: Path,
     provenance: dict,
+    *,
+    fail_on_runtime_error: bool = False,
+    resume: bool = False,
 ) -> dict:
-    output.mkdir(parents=True, exist_ok=False)
+    output.mkdir(parents=True, exist_ok=resume)
+    expected_identity = {
+        **provenance,
+        "indices": list(indices),
+        "sampling_seeds": seeds,
+    }
+    identity_file = output / "identity.json"
+    if (
+        identity_file.exists()
+        and json.loads(identity_file.read_text()) != expected_identity
+    ):
+        raise ValueError("evaluation resume identity mismatch")
     write_json(
         output / "identity.json",
         {**provenance, "indices": list(indices), "sampling_seeds": seeds},
     )
-    rows = []
+    completed_file = output / "completed_cases.json"
+    rows = (
+        json.loads(completed_file.read_text())
+        if resume and completed_file.exists()
+        else []
+    )
+    completed = {(row["trajectory_index"], row["seed"]) for row in rows}
+    if len(completed) != len(rows) or any(
+        not (output / row["prediction_file"]).is_file() for row in rows
+    ):
+        raise ValueError("invalid completed evaluation records")
     started = time.perf_counter()
     for index in indices:
         sample = predictor.load_case(index)
         for label in seeds:
+            if (index, label) in completed:
+                continue
             actual_seed = seed_draw(index, label)
             error = None
             synchronize(predictor.device)
@@ -167,6 +193,17 @@ def evaluate_model(
             try:
                 prediction, pre = predictor.predict(sample, actual_seed)
             except (RuntimeError, FloatingPointError) as failure:
+                if fail_on_runtime_error and isinstance(failure, RuntimeError):
+                    write_json(
+                        output / "evaluation_failure.json",
+                        {
+                            **provenance,
+                            "trajectory_index": index,
+                            "sampling_label": label,
+                            "error": f"{type(failure).__name__}: {failure}",
+                        },
+                    )
+                    raise
                 error = f"{type(failure).__name__}: {failure}"
                 prediction = np.full(
                     (65, len(sample["points"]), 3), np.nan, dtype=np.float32
@@ -221,7 +258,15 @@ def evaluate_model(
                 "prediction_file": str(filename.relative_to(output)),
             }
             rows.append(row)
-            append_json(output / "case_metrics.jsonl", row)
+            if resume:
+                from .ddp_train import atomic_rows
+
+                write_json(completed_file, rows)
+                atomic_rows(output / "case_metrics.jsonl", rows)
+            else:
+                append_json(output / "case_metrics.jsonl", row)
+    if resume:
+        write_json(completed_file, rows)
     summary = summarize_trajectories(rows)
     summary.update(
         evaluator=EVALUATOR_VERSION,
@@ -245,7 +290,10 @@ def load_selected(
 ) -> tuple[GraphVideoDiT, dict]:
     checkpoint = load_checkpoint(checkpoint_file)
     identity = load_artifacts(artifacts)
-    if checkpoint.get("format") != "graph_dit.h1_b1.training.v1":
+    if checkpoint.get("format") not in {
+        "graph_dit.h1_b1.training.v1",
+        "graph_dit.h1_ddp.training.v2",
+    }:
         raise ValueError("unsupported standalone training checkpoint")
     if checkpoint["artifact_id"] != identity["artifact_id"]:
         raise ValueError("checkpoint and prepared representation differ")
