@@ -18,7 +18,7 @@ from torch.nn.parallel import DistributedDataParallel
 
 from dgn4cfd.nn.diffusion.models.graph_video_dit import GraphVideoDiT
 from .config import learning_rate, validate_config
-from .distributed import Context, capture_rng, restore_rng
+from .distributed import Context, capture_rng, describe_device, restore_rng
 from .evaluate import Predictor, evaluate_model
 from .metrics import summarize_trajectories
 from .representation import load_artifacts
@@ -114,14 +114,28 @@ def train_distributed(
     training = config["training"]
     if not 1 <= stage_end <= training["schedule_total_updates"]:
         raise ValueError("stage endpoint lies outside the immutable LR schedule")
+    if (
+        "scaling" in config
+        and not config.get("preflight_max_graph")
+        and stage_end != training["budget_updates"]
+    ):
+        raise ValueError("formal scaling runs use the common 125k update endpoint")
     ctx = Context(config["distributed"]["world_size"], device_name)
     device, lock, attempt_dir = ctx.device, None, None
     update = 0
     try:
         configure_runtime(device, training["precision"], allow_distributed=True)
-        identity = load_artifacts(artifacts)
+        devices = ctx.all_call(lambda: describe_device(config, device))
+        identity = load_artifacts(artifacts, config=config)
         if identity["debug"] != debug:
             raise ValueError("formal/synthetic representation mismatch")
+        identities = ctx.gather(
+            (identity["artifact_id"], identity["representation_id"], config)
+        )
+        if any(item != identities[0] for item in identities):
+            raise ValueError(
+                "all ranks must use the same config and prepared representation"
+            )
 
         def prepare():
             nonlocal lock
@@ -142,11 +156,15 @@ def train_distributed(
         attempt_dir = Path(ctx.primary_call(prepare))
         seed_everything(config["seed"])
         model = GraphVideoDiT(**config["model"]).to(device)
+        model.activation_checkpointing = training.get("activation_checkpointing", False)
         model.set_latent_statistics(identity["latent_mean"], identity["latent_std"])
         ddp = DistributedDataParallel(
             LossForward(model),
             device_ids=[device.index] if device.type == "cuda" else None,
             broadcast_buffers=False,
+            gradient_as_bucket_view=config["distributed"].get(
+                "gradient_as_bucket_view", False
+            ),
         )
         optimizer = torch.optim.AdamW(
             model.parameters(),
@@ -205,17 +223,16 @@ def train_distributed(
             "ema_decay_unit": training.get("ema_decay_unit", "update"),
             "ema_update_decays": ema.decays,
             "parameter_count": sum(p.numel() for p in model.parameters()),
+            "activation_checkpointing": model.activation_checkpointing,
+            "gradient_as_bucket_view": ddp.gradient_as_bucket_view,
         }
-        devices = ctx.gather(
-            {
-                "rank": ctx.rank,
-                "device": str(device),
-                "torch": str(torch.__version__),
-                "gpu": torch.cuda.get_device_name(device)
-                if device.type == "cuda"
-                else None,
-            }
-        )
+        if (
+            "scaling" in config
+            and metadata["parameter_count"] != config["scaling"]["parameter_count"]
+        ):
+            raise ValueError(
+                "instantiated parameter count differs from the scaling plan"
+            )
         ctx.primary_call(
             lambda: write_json(
                 attempt_dir / "launch.json",
@@ -243,8 +260,10 @@ def train_distributed(
                 if int(item.name.split("_")[0]) <= update
             ]
 
-        def selection(complete=False):
+        def selection(complete=False, *, endpoint=False):
             candidates = records()
+            if endpoint:
+                candidates = [row for row in candidates if row["update"] == stage_end]
             valid = [
                 row
                 for row in candidates
@@ -271,8 +290,10 @@ def train_distributed(
                 }
             )
             best = {**best, "complete_stage": complete, "stage_end_updates": stage_end}
-            write_json(run / "selection.json", best)
-            atomic_rows(run / "candidates.jsonl", candidates)
+            file_name = "selection_endpoint.json" if endpoint else "selection.json"
+            write_json(run / file_name, best)
+            if not endpoint:
+                atomic_rows(run / "candidates.jsonl", candidates)
             return best
 
         ctx.primary_call(selection)
@@ -306,6 +327,10 @@ def train_distributed(
                         "artifact_id": identity["artifact_id"],
                         "representation_id": identity["representation_id"],
                         "debug": debug,
+                        **metadata,
+                        "training_gpu_hours": ctx.world
+                        * costs["train_update_seconds"]
+                        / 3600,
                         "elapsed_seconds": elapsed_before
                         + time.perf_counter()
                         - started,
@@ -348,6 +373,10 @@ def train_distributed(
                         "config": config,
                         "scope": "validation24_monitor",
                         "debug": debug,
+                        **metadata,
+                        "training_gpu_hours": (
+                            ctx.world * costs["train_update_seconds"] / 3600
+                        ),
                     }
                     ctx.all_call(
                         lambda: evaluate_model(
@@ -575,6 +604,7 @@ def train_distributed(
 
         def finish():
             best = selection(True)
+            endpoint = selection(True, endpoint=True)
             elapsed = elapsed_before + time.perf_counter() - started
             result = {
                 "state": "complete",
@@ -585,6 +615,8 @@ def train_distributed(
                 "elapsed_seconds": elapsed,
                 "selected_weights": best["weights"],
                 "selected_update": best["update"],
+                "endpoint_selected_weights": endpoint["weights"],
+                "endpoint_score": endpoint["score"],
                 "score": best["score"],
                 "failed_clips": best["failed_clips"],
                 **costs,

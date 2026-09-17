@@ -1,0 +1,79 @@
+{
+  "protocol": "graph_dit.h1_b1.ae75.joint65.tuning.v1",
+  "scaling": {
+    "format": "graph_dit.scaling32.uvp_c4.v1",
+    "model_id": "w1024_d32",
+    "parameter_count": 610257924
+  },
+  "seed": 1,
+  "distributed": {
+    "world_size": 32,
+    "gradient_as_bucket_view": true,
+    "required_accelerator": "NVIDIA L20"
+  },
+  "representation": {
+    "autoencoder_format": "vgae_cf.uvp_dit_autoencoder.v1",
+    "vgae_config_id": "w512_d4-4-2_c4",
+    "autoencoder_seed": 0,
+    "autoencoder_mode": "formal",
+    "representation_id": "d0fee50b-8a47-4652-b229-0e82e06ba2d7"
+  },
+  "model": {
+    "attention_mode": "graph_hop_mask",
+    "graph_hop_limit": 1,
+    "width": 1024,
+    "blocks": 32,
+    "heads": 8,
+    "mlp_ratio": 4,
+    "future_frames": 64,
+    "diffusion_steps": 1000,
+    "latent_features": 4,
+    "condition_features": 512
+  },
+  "training": {
+    "budget_updates": 125000,
+    "effective_batch": 32,
+    "microbatch": 1,
+    "gradient_accumulation": 1,
+    "learning_rate": 0.0001,
+    "weight_decay": 0.000001,
+    "gradient_clip": 1,
+    "precision": "fp32",
+    "activation_checkpointing": true,
+    "schedule": "cosine",
+    "warmup_updates": 4000,
+    "schedule_total_updates": 125000,
+    "min_learning_rate": 1e-7,
+    "decay_start_updates": 125000,
+    "decay_period_updates": 50000,
+    "decay_factor": 0.1,
+    "ema_decays": [
+      0.999,
+      0.9999
+    ],
+    "ema_decay_unit": "update",
+    "checkpoint_every_updates": 5000,
+    "recovery_every_updates": 1000,
+    "log_every_updates": 100
+  },
+  "validation": {
+    "every_updates": 5000,
+    "sampling_steps": 20,
+    "sampling_seeds": [
+      0,
+      1,
+      2
+    ],
+    "weights": [
+      "raw",
+      "ema_0.999",
+      "ema_0.9999"
+    ],
+    "selection": "validation24_complete_strict_uv_raw_ema",
+    "early_stopping": {
+      "enabled": false,
+      "min_updates": 125000,
+      "patience_evaluations": 20
+    }
+  }
+}

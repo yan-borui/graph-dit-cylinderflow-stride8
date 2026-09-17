@@ -1,5 +1,11 @@
 # Graph DiT · CylinderFlow · H1
 
+**本分支：32 张 L20 的四档模型 scaling。** 使用
+[SCALING_32GPU.md](SCALING_32GPU.md) 的入口，固定 B32、FP32、125k updates、
+115M/258M/459M/610M，每档三个训练 seed。已加入 block 激活重计算、多节点启动、
+固定终点评价和跨规模汇总。配置在 `configs/scaling_32gpu/`；下面的调参流程为历史入口。
+本分支尚未完成目标 32 张 L20 的运行验收。
+
 **2026-09-12 四卡搜索入口：**[12 组 H1 四卡配置与启动说明](FOUR_GPU.md)。每组 250k
 全局窗口、B4、62,500 updates，比较 250k/500k/1M 窗口 cosine，最低 LR 1e-6。
 下文保留原 B1 搜索的入口和复现说明；新四卡方案用独立配置与恢复格式。

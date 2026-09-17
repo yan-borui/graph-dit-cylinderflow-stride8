@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterator
+from contextlib import contextmanager
 from copy import deepcopy
 import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import time
 import traceback
+from types import FrameType
 import uuid
 
 import h5py
@@ -59,7 +63,7 @@ def configure_runtime(
         torch.cuda.set_device(device)
         if precision == "bf16" and not torch.cuda.is_bf16_supported():
             raise ValueError("this device does not support BF16")
-        # H1 uses an additive dense mask. Record actual runtime; do not claim sparse speedup.
+        # Keep FP32 SDPA backends fixed for dense and exact H1-neighborhood execution.
         torch.backends.cuda.enable_flash_sdp(False)
         torch.backends.cuda.enable_mem_efficient_sdp(True)
         torch.backends.cuda.enable_math_sdp(True)
@@ -83,13 +87,16 @@ class EMA:
 
     @torch.no_grad()
     def update(self, model: GraphVideoDiT) -> None:
+        current = model.state_dict()
+        parameter_keys = [key for key in current if key in self.parameter_names]
+        parameters = [current[key] for key in parameter_keys]
         for name, decay in self.decays.items():
-            for key, value in model.state_dict().items():
-                if key in self.parameter_names:
-                    self.states[name][key].mul_(decay).add_(
-                        value.detach(), alpha=1 - decay
-                    )
-                else:
+            averaged = [self.states[name][key] for key in parameter_keys]
+            # Keep the original multiply-then-add rounding and per-update decay.
+            torch._foreach_mul_(averaged, decay)
+            torch._foreach_add_(averaged, parameters, alpha=1 - decay)
+            for key, value in current.items():
+                if key not in self.parameter_names:
                     self.states[name][key].copy_(value)
 
     def restore(self, states: dict) -> None:
@@ -145,6 +152,26 @@ def freeze_source(run: Path, resume: bool) -> None:
             shutil.copyfile(original, destination)
 
 
+@contextmanager
+def graceful_pause_signals() -> Iterator[dict[str, str | None]]:
+    """Defer INT/TERM until a completed optimizer/EMA update can be saved."""
+    request = {"signal": None}
+
+    def request_pause(number: int, _frame: FrameType | None) -> None:
+        request["signal"] = signal.Signals(number).name
+
+    previous = {
+        number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM)
+    }
+    try:
+        for number in previous:
+            signal.signal(number, request_pause)
+        yield request
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
 def train_run(
     config: dict,
     artifacts: Path,
@@ -155,9 +182,12 @@ def train_run(
     *,
     resume: bool = False,
     debug: bool = False,
+    acceptance: dict | None = None,
 ) -> dict:
     validate_config(config)
     if config.get("distributed", {}).get("world_size", 1) > 1:
+        if acceptance is not None:
+            raise ValueError("this acceptance contract requires one GPU")
         from .ddp_train import train_distributed
 
         return train_distributed(
@@ -173,9 +203,17 @@ def train_run(
     training = config["training"]
     if not 1 <= stage_end <= training["schedule_total_updates"]:
         raise ValueError("stage endpoint must lie within the immutable LR plan")
+    if acceptance is not None and (
+        acceptance.get("format") != "graph_dit.real_data_acceptance.v1"
+        or acceptance.get("updates") != 8
+        or acceptance.get("resume_update") != 4
+        or stage_end not in (4, 8)
+        or len(acceptance.get("validation_indices", [])) != 1
+    ):
+        raise ValueError("invalid bounded real-data acceptance contract")
     device = torch.device(device_name)
     configure_runtime(device, training["precision"])
-    identity = load_artifacts(artifacts)
+    identity = load_artifacts(artifacts, config=config)
     if identity["debug"] != debug:
         raise ValueError("synthetic artifacts and formal runs cannot be mixed")
     if resume:
@@ -185,14 +223,34 @@ def train_run(
             raise ValueError(
                 "resume cannot change architecture, LR plan, EMA, seeds, or evaluation"
             )
+        saved_acceptance = (
+            json.loads((run / "acceptance.json").read_text())
+            if (run / "acceptance.json").exists()
+            else None
+        )
+        if saved_acceptance != acceptance:
+            raise ValueError("acceptance and formal runs cannot be mixed")
     else:
         run.mkdir(parents=True, exist_ok=False)
+        if acceptance is not None:
+            write_json(run / "acceptance.json", acceptance)
     lock = acquire_run_lock(run)
     try:
         freeze_source(run, resume)
-        return _train_locked(
-            config, artifacts, data_dir, run, stage_end, device, identity, resume, debug
-        )
+        with graceful_pause_signals() as pause_request:
+            return _train_locked(
+                config,
+                artifacts,
+                data_dir,
+                run,
+                stage_end,
+                device,
+                identity,
+                resume,
+                debug,
+                acceptance,
+                pause_request,
+            )
     finally:
         lock.close()
 
@@ -207,6 +265,8 @@ def _train_locked(
     identity: dict,
     resume: bool,
     debug: bool,
+    acceptance: dict | None,
+    pause_request: dict,
 ) -> dict:
     from .evaluate import Predictor, evaluate_model
 
@@ -214,6 +274,7 @@ def _train_locked(
     write_json(run / "config.json", config)
     seed_everything(config["seed"])
     model = GraphVideoDiT(**config["model"]).to(device)
+    model.activation_checkpointing = training.get("activation_checkpointing", False)
     model.set_latent_statistics(identity["latent_mean"], identity["latent_std"])
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -226,6 +287,10 @@ def _train_locked(
         model, artifacts, data_dir, device, training["precision"], debug=debug
     )
     predictor.model = model
+    if acceptance is not None and not set(acceptance["validation_indices"]).issubset(
+        predictor.data.splits["validation"]
+    ):
+        raise ValueError("acceptance must evaluate a real Validation trajectory")
     update, elapsed_before, run_id = 0, 0.0, str(uuid.uuid4())
     costs = {
         "train_update_seconds": 0.0,
@@ -238,6 +303,7 @@ def _train_locked(
             saved["format"] != CHECKPOINT_FORMAT
             or saved["config"] != config
             or saved["artifact_id"] != identity["artifact_id"]
+            or saved.get("acceptance") != acceptance
         ):
             raise ValueError("resume checkpoint/config/representation mismatch")
         model.load_state_dict(saved["model"], strict=True)
@@ -258,7 +324,13 @@ def _train_locked(
     attempt_dir = run / f"attempt_{attempt:03d}"
     attempt_dir.mkdir(exist_ok=False)
     physical_monitor = None
-    if config["validation"].get("early_stopping", {}).get("enabled", False):
+    strict_selection = (
+        config["validation"].get("selection")
+        == "validation24_complete_strict_uv_raw_ema"
+    )
+    if strict_selection or config["validation"].get("early_stopping", {}).get(
+        "enabled", False
+    ):
         physical_monitor = PhysicalMonitor(run, config["validation"], update)
     write_json(
         attempt_dir / "launch.json",
@@ -281,8 +353,39 @@ def _train_locked(
             else None,
             "parameter_count": sum(p.numel() for p in model.parameters()),
             "run_id": run_id,
+            "acceptance": acceptance,
         },
     )
+    if resume and acceptance is not None:
+        restored = {
+            "update": update,
+            "raw_equal": all(
+                torch.equal(value.detach().cpu(), saved["model"][key])
+                for key, value in model.state_dict().items()
+            ),
+            "ema_equal": all(
+                torch.equal(value.detach().cpu(), saved["ema"][name][key])
+                for name, state in ema.states.items()
+                for key, value in state.items()
+            ),
+            "generator_equal": torch.equal(
+                generator.get_state().cpu(), saved["training_generator"]
+            ),
+            "optimizer_steps": sorted(
+                {int(state["step"]) for state in optimizer.state.values()}
+            ),
+        }
+        write_json(attempt_dir / "restored.json", restored)
+        if (
+            update != acceptance["resume_update"]
+            or not all(
+                restored[key] for key in ("raw_equal", "ema_equal", "generator_equal")
+            )
+            or restored["optimizer_steps"] != [update]
+        ):
+            raise ValueError("acceptance checkpoint restoration failed")
+    if resume:
+        del saved
     write_json(
         run / "status.json",
         {"state": "running", "stage_end_updates": stage_end, "update": update},
@@ -314,13 +417,38 @@ def _train_locked(
             "training_generator": generator.get_state().cpu(),
             "elapsed_seconds": elapsed_before + time.perf_counter() - started,
             "costs": dict(costs),
+            "acceptance": acceptance,
         }
+        if acceptance is not None:
+            payload["parameter_names"] = sorted(ema.parameter_names)
         if physical_monitor is not None:
             payload["physical_monitor_state"] = deepcopy(physical_monitor.state)
         saving_started = time.perf_counter()
         save_checkpoint(destination, payload)
         costs["checkpoint_io_seconds"] += time.perf_counter() - saving_started
         return payload
+
+    def pause_if_requested() -> dict | None:
+        pause_file = run / "PAUSE"
+        if pause_request["signal"] is None and not pause_file.exists():
+            return None
+        checkpoint(run / "recovery_latest.pt")
+        result = {
+            "state": "paused",
+            "termination_reason": "user_request",
+            "signal": pause_request["signal"],
+            "update": update,
+            "sample_cursor": update,
+            "stage_end_updates": stage_end,
+            "run_id": run_id,
+            "elapsed_seconds": elapsed_before + time.perf_counter() - started,
+            **costs,
+            **peak_memory(device),
+        }
+        write_json(run / "status.json", result)
+        write_json(attempt_dir / "paused.json", result)
+        (attempt_dir / "exit_code").write_text("0\n")
+        return result
 
     def validate_current() -> None:
         checkpoint_relative = f"checkpoints/update_{update:09d}.pt"
@@ -338,7 +466,11 @@ def _train_locked(
         saved_rng = rng_state()
         saved_generator = generator.get_state()
         saved_mode = model.training
-        indices = monitor_indices(predictor.data.splits["validation"])
+        indices = (
+            tuple(acceptance["validation_indices"])
+            if acceptance is not None
+            else monitor_indices(predictor.data.splits["validation"])
+        )
         try:
             for weights in config["validation"]["weights"]:
                 if any(
@@ -360,7 +492,9 @@ def _train_locked(
                     "update": update,
                     "training_seed": config["seed"],
                     "config": config,
-                    "scope": "validation24_monitor",
+                    "scope": "acceptance_validation1"
+                    if acceptance is not None
+                    else "validation24_monitor",
                     "debug": debug,
                 }
                 validation_started = time.perf_counter()
@@ -456,8 +590,17 @@ def _train_locked(
     try:
         if not resume:
             checkpoint(run / "recovery_latest.pt")
+            if acceptance is not None:
+                shutil.copyfile(
+                    run / "recovery_latest.pt",
+                    run / "checkpoints" / "update_000000000.pt",
+                )
         with h5py.File(artifacts / "train_latents.h5", "r") as cache:
             indices = [int(value) for value in cache["sim_indices"]]
+            if acceptance is not None:
+                if acceptance["train_index"] not in indices:
+                    raise ValueError("acceptance graph is outside Train")
+                indices = [acceptance["train_index"]]
             if update and (
                 update % config["validation"]["every_updates"] == 0
                 or update == stage_end
@@ -468,6 +611,9 @@ def _train_locked(
                 physical_monitor is not None
                 and physical_monitor.state["stop_requested"]
             ):
+                paused = pause_if_requested()
+                if paused is not None:
+                    return paused
                 step_started = time.perf_counter()
                 epoch, offset = divmod(update, len(indices))
                 if epoch != current_epoch:
@@ -495,6 +641,11 @@ def _train_locked(
                     training["gradient_clip"],
                     error_if_nonfinite=True,
                 )
+                attention_norm = None
+                if acceptance is not None:
+                    attention_norm = float(
+                        model.blocks[0].attention.in_proj_weight.grad.norm()
+                    )
                 optimizer.step()
                 ema.update(model)
                 synchronize(device)
@@ -504,6 +655,7 @@ def _train_locked(
                     update % training["log_every_updates"] == 0
                     or update == 1
                     or update == stage_end
+                    or acceptance is not None
                 ):
                     synchronize(device)
                     row = {
@@ -522,6 +674,8 @@ def _train_locked(
                         **costs,
                         **peak_memory(device),
                     }
+                    if acceptance is not None:
+                        row["attention_gradient_norm"] = attention_norm
                     append_json(attempt_dir / "training.jsonl", row)
                     print(json.dumps(row), flush=True)
                     write_json(
@@ -542,6 +696,14 @@ def _train_locked(
                     or update == stage_end
                 ):
                     validate_current()
+                if (
+                    acceptance is not None
+                    and acceptance.get("pause_at_update") == update
+                ):
+                    (run / "PAUSE").write_text("bounded acceptance pause boundary\n")
+                paused = pause_if_requested()
+                if paused is not None:
+                    return paused
             # Includes restored RNG and all EMA states after an interrupted monitor finishes.
             checkpoint(run / "recovery_latest.pt")
         selected = json.loads(selected_file.read_text())

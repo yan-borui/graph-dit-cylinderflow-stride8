@@ -1,0 +1,109 @@
+{
+  "format": "graph_dit.scaling32.plan.v1",
+  "world_size": 32,
+  "budget_updates": 125000,
+  "budget_windows": 4000000,
+  "independent_training_seeds": [
+    0,
+    1,
+    2
+  ],
+  "tasks": [
+    {
+      "index": 0,
+      "id": "w512_d24_seed0",
+      "config": "w512_d24_seed0.json",
+      "model_id": "w512_d24",
+      "seed": 0,
+      "parameter_count": 115013124
+    },
+    {
+      "index": 1,
+      "id": "w512_d24_seed1",
+      "config": "w512_d24_seed1.json",
+      "model_id": "w512_d24",
+      "seed": 1,
+      "parameter_count": 115013124
+    },
+    {
+      "index": 2,
+      "id": "w512_d24_seed2",
+      "config": "w512_d24_seed2.json",
+      "model_id": "w512_d24",
+      "seed": 2,
+      "parameter_count": 115013124
+    },
+    {
+      "index": 3,
+      "id": "w768_d24_seed0",
+      "config": "w768_d24_seed0.json",
+      "model_id": "w768_d24",
+      "seed": 0,
+      "parameter_count": 258437380
+    },
+    {
+      "index": 4,
+      "id": "w768_d24_seed1",
+      "config": "w768_d24_seed1.json",
+      "model_id": "w768_d24",
+      "seed": 1,
+      "parameter_count": 258437380
+    },
+    {
+      "index": 5,
+      "id": "w768_d24_seed2",
+      "config": "w768_d24_seed2.json",
+      "model_id": "w768_d24",
+      "seed": 2,
+      "parameter_count": 258437380
+    },
+    {
+      "index": 6,
+      "id": "w1024_d24_seed0",
+      "config": "w1024_d24_seed0.json",
+      "model_id": "w1024_d24",
+      "seed": 0,
+      "parameter_count": 459140100
+    },
+    {
+      "index": 7,
+      "id": "w1024_d24_seed1",
+      "config": "w1024_d24_seed1.json",
+      "model_id": "w1024_d24",
+      "seed": 1,
+      "parameter_count": 459140100
+    },
+    {
+      "index": 8,
+      "id": "w1024_d24_seed2",
+      "config": "w1024_d24_seed2.json",
+      "model_id": "w1024_d24",
+      "seed": 2,
+      "parameter_count": 459140100
+    },
+    {
+      "index": 9,
+      "id": "w1024_d32_seed0",
+      "config": "w1024_d32_seed0.json",
+      "model_id": "w1024_d32",
+      "seed": 0,
+      "parameter_count": 610257924
+    },
+    {
+      "index": 10,
+      "id": "w1024_d32_seed1",
+      "config": "w1024_d32_seed1.json",
+      "model_id": "w1024_d32",
+      "seed": 1,
+      "parameter_count": 610257924
+    },
+    {
+      "index": 11,
+      "id": "w1024_d32_seed2",
+      "config": "w1024_d32_seed2.json",
+      "model_id": "w1024_d32",
+      "seed": 2,
+      "parameter_count": 610257924
+    }
+  ]
+}

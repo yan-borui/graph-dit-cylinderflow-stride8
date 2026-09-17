@@ -15,6 +15,7 @@ from typing import Literal
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 CHECKPOINT_FORMAT_V1 = "dgn4cfd.graph_video_dit.joint.v1"
@@ -23,6 +24,7 @@ CHECKPOINT_FORMAT = "dgn4cfd.graph_video_dit.joint.v3"
 DEFAULT_FUTURE_FRAMES = 64
 DEFAULT_DIFFUSION_STEPS = 1000
 DEFAULT_SAMPLING_STEPS = 20
+NeighborLayout = tuple[tuple[tuple[torch.Tensor, torch.Tensor], ...], torch.Tensor]
 
 
 def sinusoidal_embedding(values: torch.Tensor, dim: int) -> torch.Tensor:
@@ -47,6 +49,16 @@ def _modulate(
     values: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor
 ) -> torch.Tensor:
     return values * (1.0 + scale) + shift
+
+
+def _slot_modulation(
+    layer: nn.Module, condition: torch.Tensor, total_slots: int
+) -> torch.Tensor:
+    """Project clean/future diffusion conditions once, then broadcast over nodes."""
+    pair = layer(condition)
+    return torch.cat(
+        (pair[:, :1], pair[:, 1:].expand(-1, total_slots - 1, -1)), dim=1
+    ).unsqueeze(2)
 
 
 class JointDiTBlock(nn.Module):
@@ -74,13 +86,68 @@ class JointDiTBlock(nn.Module):
         nn.init.zeros_(self.modulation[-1].weight)
         nn.init.zeros_(self.modulation[-1].bias)
 
+    def _neighbor_attention(
+        self, inputs: torch.Tensor, total_slots: int, layout: NeighborLayout
+    ) -> torch.Tensor:
+        """Evaluate exactly the unmasked H1 keys, grouped by spatial degree."""
+        batch_size, token_count, width = inputs.shape
+        num_nodes = token_count // total_slots
+        heads = self.attention.num_heads
+        head_width = width // heads
+        query, key, value = F.linear(
+            inputs, self.attention.in_proj_weight, self.attention.in_proj_bias
+        ).chunk(3, dim=-1)
+        query = query.reshape(batch_size, total_slots, num_nodes, heads, head_width)
+        query = query.permute(0, 2, 3, 1, 4).reshape(
+            batch_size * num_nodes, heads, total_slots, head_width
+        )
+
+        def node_values(tensor: torch.Tensor) -> torch.Tensor:
+            return (
+                tensor.reshape(batch_size, total_slots, num_nodes, heads, head_width)
+                .permute(0, 2, 1, 3, 4)
+                .reshape(batch_size * num_nodes, total_slots, heads, head_width)
+            )
+
+        key, value = node_values(key), node_values(value)
+        groups, original_node_order = layout
+        outputs = []
+        for centers, neighbors in groups:
+            count, degree = neighbors.shape
+
+            def neighbor_values(tensor: torch.Tensor) -> torch.Tensor:
+                # Time precedes neighbor index, matching the dense mask's key order.
+                return (
+                    tensor[neighbors]
+                    .permute(0, 3, 2, 1, 4)
+                    .reshape(count, heads, total_slots * degree, head_width)
+                )
+
+            outputs.append(
+                F.scaled_dot_product_attention(
+                    query[centers],
+                    neighbor_values(key),
+                    neighbor_values(value),
+                    dropout_p=0.0,
+                    is_causal=False,
+                )
+            )
+        output = torch.cat(outputs, dim=0)[original_node_order]
+        output = (
+            output.reshape(batch_size, num_nodes, heads, total_slots, head_width)
+            .permute(0, 3, 1, 2, 4)
+            .reshape(batch_size, token_count, width)
+        )
+        return self.attention.out_proj(output)
+
     def forward(
         self,
         tokens: torch.Tensor,
         condition: torch.Tensor,
         attention_bias: torch.Tensor | None = None,
+        neighbor_layout: NeighborLayout | None = None,
     ) -> torch.Tensor:
-        """Process all tokens with optional additive non-causal attention bias."""
+        """Process [B, slots, nodes, width] with the original token ordering."""
 
         (
             attention_shift,
@@ -89,20 +156,27 @@ class JointDiTBlock(nn.Module):
             mlp_shift,
             mlp_scale,
             mlp_gate,
-        ) = self.modulation(condition).chunk(6, dim=-1)
+        ) = _slot_modulation(self.modulation, condition, tokens.size(1)).chunk(
+            6, dim=-1
+        )
         attention_input = _modulate(
             self.attention_norm(tokens), attention_shift, attention_scale
-        )
-        attention_kwargs = {"need_weights": False, "is_causal": False}
-        if attention_bias is not None:
-            attention_kwargs["attn_mask"] = attention_bias
-        attention_output, _ = self.attention(
-            attention_input,
-            attention_input,
-            attention_input,
-            **attention_kwargs,
-        )
-        tokens = tokens + attention_gate * attention_output
+        ).flatten(1, 2)
+        if neighbor_layout is not None:
+            attention_output = self._neighbor_attention(
+                attention_input, tokens.size(1), neighbor_layout
+            )
+        else:
+            attention_kwargs = {"need_weights": False, "is_causal": False}
+            if attention_bias is not None:
+                attention_kwargs["attn_mask"] = attention_bias
+            attention_output, _ = self.attention(
+                attention_input,
+                attention_input,
+                attention_input,
+                **attention_kwargs,
+            )
+        tokens = tokens + attention_gate * attention_output.reshape_as(tokens)
         mlp_input = _modulate(self.mlp_norm(tokens), mlp_shift, mlp_scale)
         return tokens + mlp_gate * self.mlp(mlp_input)
 
@@ -121,7 +195,9 @@ class JointFinalLayer(nn.Module):
         nn.init.zeros_(self.output.bias)
 
     def forward(self, tokens: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
-        shift, scale = self.modulation(condition).chunk(2, dim=-1)
+        shift, scale = _slot_modulation(
+            self.modulation, condition, tokens.size(1)
+        ).chunk(2, dim=-1)
         return self.output(_modulate(self.norm(tokens), shift, scale))
 
 
@@ -129,8 +205,9 @@ class GraphVideoDiT(nn.Module):
     """Jointly predict DDPM noise for a fixed block of future graph latents.
 
     Public tensor axes are ``B`` graphs, ``S`` frame slots, ``N`` coarsest graph
-    nodes, and ``C`` latent features.  Production uses ``B=1``, ``S=1+64`` and
-    ``C=1``. This release fixes H1: dense attention with an additive graph-hop mask.
+    nodes, and ``C`` latent features. Personal retraining uses ``B=1``, ``S=1+64``
+    and ``C=4``; legacy representations remain configurable. H1 evaluates the
+    exact graph-hop neighborhood, including all frame slots for every neighbor.
     """
 
     def __init__(
@@ -195,6 +272,8 @@ class GraphVideoDiT(nn.Module):
         self.graph_bias_alpha = float(graph_bias_alpha)
         self.graph_hop_limit = graph_hop_limit
         self.total_slots = self.future_frames + 1
+        # Execution policy is recorded in the training config, not weight shapes.
+        self.activation_checkpointing = False
 
         self.latent_encoder = nn.Linear(self.latent_features, self.width)
         self.condition_encoder = nn.Linear(self.condition_features, self.width)
@@ -363,6 +442,27 @@ class GraphVideoDiT(nn.Module):
             if not bool(torch.all(allowed.any(dim=-1)).item()):
                 raise ValueError("graph-hop mask contains a fully masked row")
 
+    def _neighbor_layout(self, graph_hops: torch.Tensor) -> NeighborLayout:
+        """Group rows by degree without padding or dropping an allowed connection."""
+        batch_size, num_nodes, _ = graph_hops.shape
+        allowed = (graph_hops >= 0) & (graph_hops <= 1)
+        node_indices = torch.arange(num_nodes, device=graph_hops.device)
+        neighbors = torch.where(allowed, node_indices, num_nodes).sort(dim=-1).values
+        neighbors = neighbors.reshape(batch_size * num_nodes, num_nodes)
+        degrees = allowed.sum(dim=-1).reshape(-1).cpu().tolist()
+        groups = []
+        for degree in sorted(set(degrees)):
+            centers = torch.tensor(
+                [index for index, count in enumerate(degrees) if count == degree],
+                device=graph_hops.device,
+                dtype=torch.long,
+            )
+            selected = neighbors[centers, :degree]
+            selected = selected + (centers // num_nodes)[:, None] * num_nodes
+            groups.append((centers, selected))
+        original_order = torch.argsort(torch.cat([centers for centers, _ in groups]))
+        return tuple(groups), original_order
+
     def _attention_bias(
         self,
         graph_distance: torch.Tensor | None,
@@ -421,26 +521,18 @@ class GraphVideoDiT(nn.Module):
         )
         return 2.0 * (positions - lower) / scale - 1.0
 
-    def _token_conditions(
+    def _diffusion_conditions(
         self,
         diffusion_step: torch.Tensor,
-        num_nodes: int,
         *,
         dtype: torch.dtype,
     ) -> torch.Tensor:
-        batch_size = diffusion_step.size(0)
-        clean_step = torch.zeros(
-            batch_size, 1, dtype=diffusion_step.dtype, device=diffusion_step.device
+        """Only diffusion step 0 and t differ; physical-time positions stay separate."""
+        pair_steps = torch.stack(
+            (torch.zeros_like(diffusion_step), diffusion_step), dim=1
         )
-        future_steps = diffusion_step[:, None].expand(-1, self.future_frames)
-        slot_steps = torch.cat([clean_step, future_steps], dim=1)
-        slot_condition = self.timestep_encoder(
-            sinusoidal_embedding(slot_steps, self.width)
-        ).to(dtype)
-        return (
-            slot_condition[:, :, None]
-            .expand(-1, -1, num_nodes, -1)
-            .reshape(batch_size, self.total_slots * num_nodes, self.width)
+        return self.timestep_encoder(sinusoidal_embedding(pair_steps, self.width)).to(
+            dtype
         )
 
     def _position_features(
@@ -486,16 +578,37 @@ class GraphVideoDiT(nn.Module):
             self.latent_encoder(slots)
             + self.condition_encoder(node_context)[:, None]
             + self._position_features(positions, dtype=slots.dtype)
-        ).reshape(batch_size, self.total_slots * num_nodes, self.width)
-        token_condition = self._token_conditions(
-            diffusion_step, num_nodes, dtype=tokens.dtype
         )
-        attention_bias = self._attention_bias(
-            graph_distance, graph_hops, dtype=tokens.dtype
+        diffusion_condition = self._diffusion_conditions(
+            diffusion_step, dtype=tokens.dtype
         )
+        neighbor_layout = None
+        attention_bias = None
+        if self.attention_mode == "graph_hop_mask" and self.graph_hop_limit == 1:
+            neighbor_layout = self._neighbor_layout(graph_hops)
+        else:
+            attention_bias = self._attention_bias(
+                graph_distance, graph_hops, dtype=tokens.dtype
+            )
         for block in self.blocks:
-            tokens = block(tokens, token_condition, attention_bias)
-        predicted = self.final(tokens, token_condition).reshape(
+            if (
+                self.activation_checkpointing
+                and self.training
+                and torch.is_grad_enabled()
+            ):
+                tokens = checkpoint(
+                    block,
+                    tokens,
+                    diffusion_condition,
+                    attention_bias,
+                    neighbor_layout,
+                    use_reentrant=False,
+                )
+            else:
+                tokens = block(
+                    tokens, diffusion_condition, attention_bias, neighbor_layout
+                )
+        predicted = self.final(tokens, diffusion_condition).reshape(
             batch_size,
             self.total_slots,
             num_nodes,

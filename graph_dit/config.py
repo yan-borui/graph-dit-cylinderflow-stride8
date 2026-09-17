@@ -71,13 +71,13 @@ def validate_config(config: dict) -> None:
         "mlp_ratio": 4.0,
         "future_frames": 64,
         "diffusion_steps": 1000,
-        "latent_features": 1,
-        "condition_features": 126,
     }
     if any(model.get(key) != value for key, value in fixed.items()):
-        raise ValueError(
-            "H1, eight heads, joint64 and the frozen representation must stay fixed"
-        )
+        raise ValueError("H1, eight heads and joint64 must stay fixed")
+    for name in ("latent_features", "condition_features"):
+        value = model.get(name)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError(f"model.{name} must be a positive integer")
     world = config.get("distributed", {}).get("world_size", 1)
     if not isinstance(world, int) or isinstance(world, bool) or world < 1:
         raise ValueError("world_size must be a positive integer")
@@ -94,6 +94,12 @@ def validate_config(config: dict) -> None:
             raise ValueError("resolve the window schedule before training")
     if training.get("ema_decay_unit", "update") not in {"update", "window"}:
         raise ValueError("EMA decay unit must be update or window")
+    if not isinstance(training.get("activation_checkpointing", False), bool):
+        raise ValueError("activation_checkpointing must be boolean")
+    if not isinstance(
+        config.get("distributed", {}).get("gradient_as_bucket_view", False), bool
+    ):
+        raise ValueError("gradient_as_bucket_view must be boolean")
     if world > 1 and validation.get("early_stopping", {}).get("enabled", False):
         raise ValueError("the distributed screening protocol disables early stopping")
     if model["width"] < 8 or model["width"] % 8 or model["blocks"] < 1:
@@ -140,6 +146,70 @@ def validate_config(config: dict) -> None:
     if validation["every_updates"] < 1 or config["seed"] < 0:
         raise ValueError("invalid Validation interval or training seed")
     validate_policy(validation)
+    if "scaling" in config:
+        validate_scaling(config)
+
+
+def validate_scaling(config: dict) -> None:
+    """Keep the four-size experiment on one fixed scientific recipe."""
+    model, training = config["model"], config["training"]
+    sizes = {(512, 24), (768, 24), (1024, 24), (1024, 32)}
+    width, depth = model["width"], model["blocks"]
+    if (width, depth) not in sizes or config["seed"] not in (0, 1, 2):
+        raise ValueError(
+            "scaling uses the four declared sizes and training seeds 0/1/2"
+        )
+    expected_parameters = (18 * depth + 5) * width**2 + (15 * depth + 531) * width + 4
+    if config["scaling"] != {
+        "format": "graph_dit.scaling32.uvp_c4.v1",
+        "model_id": f"w{width}_d{depth}",
+        "parameter_count": expected_parameters,
+    }:
+        raise ValueError("scaling model identity or parameter count differs")
+    if config.get("distributed") != {
+        "world_size": 32,
+        "gradient_as_bucket_view": True,
+        "required_accelerator": "NVIDIA L20",
+    }:
+        raise ValueError("scaling fixes 32 L20 ranks and shared gradient buckets")
+    expected_training = {
+        "budget_updates": 125000,
+        "effective_batch": 32,
+        "microbatch": 1,
+        "gradient_accumulation": 1,
+        "learning_rate": 1e-4,
+        "weight_decay": 1e-6,
+        "gradient_clip": 1.0,
+        "precision": "fp32",
+        "schedule": "cosine",
+        "warmup_updates": 4000,
+        "schedule_total_updates": 125000,
+        "min_learning_rate": 1e-7,
+        "ema_decays": [0.999, 0.9999],
+        "ema_decay_unit": "update",
+        "activation_checkpointing": True,
+        "checkpoint_every_updates": 5000,
+        "recovery_every_updates": 1000,
+        "log_every_updates": 100,
+    }
+    if any(training.get(key) != value for key, value in expected_training.items()):
+        raise ValueError("scaling sizes must share the fixed training recipe")
+    if model["latent_features"] != 4 or model["condition_features"] != 512:
+        raise ValueError("scaling fixes the UVP-c4 representation dimensions")
+    if config.get("representation", {}).get("representation_id") != (
+        "d0fee50b-8a47-4652-b229-0e82e06ba2d7"
+    ):
+        raise ValueError("scaling requires the selected epoch1180 UVP representation")
+    validation = config["validation"]
+    if (
+        validation["every_updates"] != 5000
+        or validation["weights"] != ["raw", "ema_0.999", "ema_0.9999"]
+        or validation.get("selection") != "validation24_complete_strict_uv_raw_ema"
+        or validation.get("early_stopping", {}).get("enabled") is not False
+    ):
+        raise ValueError(
+            "scaling keeps common physical validation and a fixed endpoint"
+        )
 
 
 def learning_rate(config: dict, update: int) -> float:

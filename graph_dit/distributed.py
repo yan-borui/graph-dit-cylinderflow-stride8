@@ -5,11 +5,34 @@ from __future__ import annotations
 from datetime import timedelta
 import os
 import random
+import socket
 import traceback
 
 import numpy as np
 import torch
 import torch.distributed as dist
+
+
+def describe_device(config: dict, device: torch.device) -> dict:
+    """Record rank placement and enforce an explicitly configured accelerator."""
+    gpu = torch.cuda.get_device_name(device) if device.type == "cuda" else None
+    required = config.get("distributed", {}).get("required_accelerator")
+    if required is not None and gpu != required:
+        raise ValueError(f"configured accelerator {required!r}, found {gpu!r}")
+    return {
+        "rank": int(os.environ.get("RANK", "0")),
+        "local_rank": int(os.environ.get("LOCAL_RANK", "0")),
+        "local_world_size": int(os.environ.get("LOCAL_WORLD_SIZE", "1")),
+        "hostname": socket.gethostname(),
+        "device": str(device),
+        "gpu": gpu,
+        "total_memory_bytes": torch.cuda.get_device_properties(device).total_memory
+        if device.type == "cuda"
+        else None,
+        "torch": str(torch.__version__),
+        "cuda": torch.version.cuda,
+        "backend": dist.get_backend() if dist.is_initialized() else None,
+    }
 
 
 def capture_rng(device: torch.device) -> dict:
