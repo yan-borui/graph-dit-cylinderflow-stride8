@@ -7,7 +7,6 @@ import json
 import os
 import shutil
 import time
-import urllib.request
 import uuid
 from pathlib import Path
 
@@ -23,9 +22,11 @@ from dgn4cfd.cylinderflow_data import (
 from dgn4cfd.graph_distance import unweighted_shortest_path_hops
 from dgn4cfd.nn.diffusion.graph_window_codec import FrozenUVPLatentCodec
 from .data import Dataset, DATA_REPOSITORY, DATA_REVISION
+from .config import load_config
 from .runtime import seed_everything, write_json
 
 ARTIFACT_FORMAT = "graph_dit.ae75.train_cache.v1"
+PERSONAL_AE_FORMAT = "vgae_cf.airfoil_uvp_dit_autoencoder.v1"
 AE_ASSET = "vgae_stride8_epoch930.pt"
 AE_REPRESENTATION_ID = "cylinderflow_stride8_vgae_epoch930_release_v1"
 AE_REPOSITORY = "DingDong1921/graph-dit-cylinderflow-stride8"
@@ -44,8 +45,8 @@ AE_SOURCES = {
 
 def paths(data_dir: Path) -> tuple[Path, Path]:
     return (
-        data_dir / "cylinderflow_stride8_75frames.h5",
-        data_dir / "cylinderflow_stride8_75frames_manifest.json",
+        data_dir / "airfoil_stride8_75frames.h5",
+        data_dir / "airfoil_stride8_75frames_manifest.json",
     )
 
 
@@ -63,43 +64,81 @@ def open_data(
 
 
 def fetch_autoencoder(output: Path, *, source: str = "huggingface") -> None:
-    """Fetch the pinned release, or reuse an existing matching checkpoint."""
-    if source not in AE_SOURCES:
-        raise ValueError(f"unknown autoencoder source: {source}")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    if output.exists():
-        temporary = output
-        print(f"Reusing {output}", flush=True)
-    else:
-        temporary = output.with_name(output.name + ".partial")
-        print(f"Downloading {AE_ASSET} from {AE_SOURCES[source]}", flush=True)
-        with (
-            urllib.request.urlopen(AE_SOURCES[source], timeout=120) as response,
-            temporary.open("wb") as stream,
+    raise RuntimeError(
+        "Airfoil requires a new Airfoil VGAE export; no CylinderFlow weights are downloaded"
+    )
+
+
+def checkpoint_features(checkpoint: dict) -> dict:
+    """Read representation dimensions from either supported UVP weight export."""
+    arch = checkpoint.get("arch", {})
+    if arch.get("in_node_features") != 3:
+        raise ValueError("the frozen autoencoder must encode and decode UVP")
+    dimensions = {
+        "latent_features": arch.get("latent_node_features"),
+        "condition_features": arch.get("fnns_width"),
+    }
+    for name, value in dimensions.items():
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError(f"invalid autoencoder {name}")
+    if checkpoint.get("format") == PERSONAL_AE_FORMAT:
+        metadata = checkpoint.get("metadata", {})
+        if (
+            metadata.get("fields") != ["u", "v", "p"]
+            or metadata.get("architecture") != arch
+            or metadata.get("latent_channels") != dimensions["latent_features"]
+            or metadata.get("condition_features") != dimensions["condition_features"]
+            or metadata.get("representation_id") != checkpoint.get("representation_id")
+            or checkpoint.get("test_accessed") is not False
         ):
-            shutil.copyfileobj(response, stream, length=1024 * 1024)
-    payload = torch.load(temporary, map_location="cpu", weights_only=True)
-    if payload.get("representation_id") != AE_REPRESENTATION_ID:
-        raise ValueError("unexpected released representation identity")
-    if payload.get("dataset_revision") != DATA_REVISION:
-        raise ValueError("released representation has a different dataset revision")
-    if temporary != output:
-        os.replace(temporary, output)
+            raise ValueError("personal UVP export metadata is inconsistent")
+    return dimensions
+
+
+def validate_model_representation(model_config: dict, identity: dict) -> None:
+    """Bind the DiT input/output widths to the actual frozen representation."""
+    for name in ("latent_features", "condition_features"):
+        if model_config.get(name) != identity.get(name):
+            raise ValueError(f"DiT {name} differs from the frozen representation")
+
+
+def validate_representation_config(config: dict, identity: dict) -> None:
+    validate_model_representation(config["model"], identity)
+    for name, value in config.get("representation", {}).items():
+        if identity.get(name) != value:
+            raise ValueError(f"the requested representation differs: {name}")
 
 
 def prepare(
-    data_dir: Path, autoencoder: Path, output: Path, device: str, *, debug: bool = False
+    data_dir: Path,
+    autoencoder: Path,
+    output: Path,
+    device: str,
+    *,
+    debug: bool = False,
+    config: dict | None = None,
 ) -> dict:
     data, graphs = open_data(data_dir, debug=debug)
     checkpoint = torch.load(autoencoder, map_location="cpu", weights_only=True)
     if not checkpoint.get("representation_id"):
         raise ValueError(
-            "use the released AE or the identified checkpoint produced by graph_dit.ae"
+            "use an identified UVP weight export, including dit_autoencoder.pt"
         )
     if checkpoint.get("normalization") != data.manifest["train_only_normalization"]:
         raise ValueError("the AE was trained with a different physical normalizer")
     if checkpoint.get("dataset_revision") != DATA_REVISION and not debug:
         raise ValueError("AE dataset revision differs from the released data")
+    features = checkpoint_features(checkpoint)
+    representation = {
+        **features,
+        "autoencoder_architecture": checkpoint["arch"],
+        "autoencoder_format": checkpoint.get("format"),
+        "vgae_config_id": checkpoint.get("config_id"),
+        "autoencoder_seed": checkpoint.get("seed"),
+        "autoencoder_mode": checkpoint.get("mode"),
+    }
+    if config is not None:
+        validate_representation_config(config, representation)
     output.mkdir(parents=True, exist_ok=False)
     seed_everything(0)
     started = time.perf_counter()
@@ -107,6 +146,7 @@ def prepare(
     shutil.copyfile(autoencoder, output / "autoencoder.pt")
     shutil.copyfile(paths(data_dir)[1], output / "dataset_manifest.json")
     identity = {
+        **representation,
         "format": ARTIFACT_FORMAT,
         "artifact_id": str(uuid.uuid4()),
         "representation_id": checkpoint["representation_id"],
@@ -190,7 +230,13 @@ def prepare(
     return identity
 
 
-def load_artifacts(directory: Path, data: Dataset | None = None) -> dict:
+def load_artifacts(
+    directory: Path,
+    data: Dataset | None = None,
+    *,
+    config: dict | None = None,
+    autoencoder: Path | None = None,
+) -> dict:
     identity = json.loads((directory / "artifact.json").read_text(encoding="utf-8"))
     if identity.get("format") != ARTIFACT_FORMAT or identity.get("state") != "complete":
         raise ValueError("representation preparation is incomplete or unsupported")
@@ -199,6 +245,32 @@ def load_artifacts(directory: Path, data: Dataset | None = None) -> dict:
         raise ValueError("representation checkpoint ID does not match artifacts")
     if ae.get("normalization") != identity["normalization"]:
         raise ValueError("representation normalization mismatch")
+    features = checkpoint_features(ae)
+    representation = {
+        **features,
+        "autoencoder_architecture": ae["arch"],
+        "autoencoder_format": ae.get("format"),
+        "vgae_config_id": ae.get("config_id"),
+        "autoencoder_seed": ae.get("seed"),
+        "autoencoder_mode": ae.get("mode"),
+    }
+    for name, value in representation.items():
+        if name in identity and identity[name] != value:
+            raise ValueError(f"prepared representation metadata differs: {name}")
+        identity[name] = value
+    if config is not None:
+        validate_representation_config(config, identity)
+    if autoencoder is not None:
+        requested = torch.load(autoencoder, map_location="cpu", weights_only=True)
+        if (
+            requested.get("representation_id") != identity["representation_id"]
+            or requested.get("normalization") != identity["normalization"]
+            or requested.get("dataset_revision") != ae.get("dataset_revision")
+            or requested.get("arch") != ae["arch"]
+        ):
+            raise ValueError(
+                "the explicitly requested autoencoder differs from the cache"
+            )
     if data is not None:
         if json.dumps(identity["data_identity"], sort_keys=True) != json.dumps(
             data.identity(), sort_keys=True
@@ -216,6 +288,36 @@ def load_artifacts(directory: Path, data: Dataset | None = None) -> dict:
             raise ValueError("latent cache is not exactly the declared Train split")
         if cache.attrs.get("representation_id") != identity["representation_id"]:
             raise ValueError("cache and autoencoder dependencies differ")
+        channels = features["latent_features"]
+        for name in ("latent_mean", "latent_std"):
+            values = np.asarray(identity[name], dtype=np.float32)
+            if (
+                values.shape != (channels,)
+                or not np.isfinite(values).all()
+                or (name == "latent_std" and np.any(values <= 0))
+                or not np.array_equal(cache[name][:], values)
+            ):
+                raise ValueError(f"invalid or inconsistent Train {name}")
+        for index in expected:
+            group = cache[f"sim_{index:05d}"]
+            latent_shape = group["latents"].shape
+            if (
+                len(latent_shape) != 3
+                or latent_shape[0] != 75
+                or latent_shape[2] != channels
+            ):
+                raise ValueError(
+                    f"Train latent dimensions differ at trajectory {index}"
+                )
+            nodes = latent_shape[1]
+            if (
+                group["node_context"].shape != (nodes, features["condition_features"])
+                or group["positions"].shape != (nodes, 2)
+                or group["graph_hops"].shape != (nodes, nodes)
+            ):
+                raise ValueError(
+                    f"Train graph context dimensions differ at trajectory {index}"
+                )
     return identity
 
 
@@ -230,11 +332,47 @@ def main() -> None:
     build.add_argument("--autoencoder", type=Path, required=True)
     build.add_argument("--output-dir", type=Path, required=True)
     build.add_argument("--device", default="cuda:0")
+    build.add_argument(
+        "--config", type=Path, help="bind preparation to this DiT configuration"
+    )
+    verify = commands.add_parser(
+        "verify", help="check data, weights and prepared cache identity"
+    )
+    verify.add_argument("--data-dir", type=Path, required=True)
+    verify.add_argument("--autoencoder", type=Path, required=True)
+    verify.add_argument("--artifacts", type=Path, required=True)
+    verify.add_argument("--config", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "fetch-ae":
         fetch_autoencoder(args.output, source=args.source)
+    elif args.command == "verify":
+        identity = load_artifacts(
+            args.artifacts,
+            Dataset(*paths(args.data_dir)),
+            config=load_config(args.config),
+            autoencoder=args.autoencoder,
+        )
+        print(
+            json.dumps(
+                {
+                    key: identity[key]
+                    for key in (
+                        "artifact_id",
+                        "representation_id",
+                        "latent_features",
+                        "condition_features",
+                    )
+                }
+            )
+        )
     else:
-        prepare(args.data_dir, args.autoencoder, args.output_dir, args.device)
+        prepare(
+            args.data_dir,
+            args.autoencoder,
+            args.output_dir,
+            args.device,
+            config=load_config(args.config) if args.config else None,
+        )
 
 
 if __name__ == "__main__":

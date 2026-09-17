@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "graph-dit-cylinderflow"
 version = "0.1.0"
-description = "H1 graph attention, effective batch one, reproducible CylinderFlow tuning"
+description = "Locked four-GPU H1 graph diffusion for Airfoil UVP"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
 dependencies = [
@@ -15,4 +15,4 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["graph_dit*", "dgn4cfd*"]
+include = ["graph_dit*", "dgn4cfd*", "airfoil_data*"]

@@ -10,12 +10,12 @@ import numpy as np
 
 from . import PROTOCOL_VERSION
 
-DATA_REPOSITORY = "DingDong1921/mgn-cylinderflow-stride8-75frames"
-DATA_REVISION = "8eae2c7a697e7d01f3b98f4d642ea476784df84a"
-FORMAT = "dgn4cfd.mgn_cylinderflow_temporal_stride.v1"
+DATA_REPOSITORY = "dm-meshgraphnets/airfoil"
+DATA_REVISION = "airfoil.uvp.stride8.first75.v1"
+FORMAT = "dgn4cfd.mgn_airfoil_uvp_temporal_stride.v1"
 TRAIN_FRAMES = 75
 EVALUATION_FRAMES = 65
-DT = 0.08
+DT = 0.0016
 
 
 def edges_from_cells(points: np.ndarray, cells: np.ndarray):
@@ -41,10 +41,10 @@ class Dataset:
             raise ValueError("expected the released 75-frame stride-8 manifest")
         if m.get("temporal_stride") != 8 or not np.isclose(m.get("frame_dt", 0), DT):
             raise ValueError(
-                "the matched physical output interval is dt=0.08, stride=8"
+                "the matched physical output interval is dt=0.0016, stride=8"
             )
-        if not np.isclose(m.get("raw_frame_dt", 0.01), 0.01):
-            raise ValueError("raw dt must be 0.01")
+        if not np.isclose(m.get("raw_frame_dt", 0.0002), 0.0002):
+            raise ValueError("raw dt must be 0.0002")
         if m.get("test_accessed") not in (False, None):
             raise ValueError("this workflow requires a Test-unaccessed manifest")
         if m.get("phase_offset", 0) != 0 or m.get("phase_augmentation", False):
@@ -132,8 +132,8 @@ class Dataset:
                 raise ValueError("invalid triangle mesh")
             if cells.min() < 0 or cells.max() >= len(points):
                 raise ValueError("triangle index is outside the mesh")
-            if not set(np.unique(node_type)).issubset({0, 4, 5, 6}):
-                raise ValueError("unexpected CylinderFlow node labels")
+            if not set(np.unique(node_type)).issubset({0, 2, 4}):
+                raise ValueError("unexpected Airfoil node labels")
             if self.graph_cache is not None:
                 with np.load(
                     self.graph_cache / f"trajectory_{index:04d}.npz", allow_pickle=False

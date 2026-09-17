@@ -87,7 +87,7 @@ def report_run(run: Path, output: Path, *, movies: bool = False) -> None:
         f"schedule endpoint={config['training']['schedule_total_updates']:,}; allocated endpoint={status.get('stage_end_updates')}",
         f"Status: {status['state']}; completed updates={status.get('update')}; windows={status.get('examples_seen', status.get('update'))}",
         "Train 75-frame VGAE / fixed first-65-frame DiT; observed frame 0 -> future 1..64",
-        "dt=0.08; common physical evaluator; Test sealed",
+        "dt=0.0016; common physical evaluator; Test sealed",
         f"Selected: {selection['weights']} at update {selection['update']}, score={selection['score']}, failed clips={selection['failed_clips']}"
         if selection
         else "No completed checkpoint selection",

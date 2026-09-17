@@ -31,7 +31,7 @@ class PhysicalMonitor:
         self.run = run
         self.directory = run / "physical_monitor"
         self.validation = deepcopy(validation)
-        self.policy = deepcopy(validation["early_stopping"])
+        self.policy = deepcopy(validation.get("early_stopping", {"enabled": False}))
         self.weights = list(validation["weights"])
         self.interval = validation["every_updates"]
         for name in ("candidates", "rounds", "errors"):
@@ -182,7 +182,8 @@ class PhysicalMonitor:
             else:
                 state["bad_evaluations"] += 1
         state["stop_requested"] = bool(
-            state["last_update"] >= self.policy["min_updates"]
+            self.policy["enabled"]
+            and state["last_update"] >= self.policy["min_updates"]
             and state["bad_evaluations"] >= self.policy["patience_evaluations"]
         )
         if state["stop_requested"]:

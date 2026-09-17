@@ -18,7 +18,7 @@ from .transforms import AddDirichletMask, Copy, MeshCoarsening, ScaleEdgeAttr
 
 
 CYLINDERFLOW_FORMAT = "dgn4cfd.mgn_cylinderflow_raw600.v1"
-CYLINDERFLOW_TEMPORAL_STRIDE_FORMAT = "dgn4cfd.mgn_cylinderflow_temporal_stride.v1"
+CYLINDERFLOW_TEMPORAL_STRIDE_FORMAT = "dgn4cfd.mgn_airfoil_uvp_temporal_stride.v1"
 SUPPORTED_CYLINDERFLOW_FORMATS = {
     CYLINDERFLOW_FORMAT,
     CYLINDERFLOW_TEMPORAL_STRIDE_FORMAT,
@@ -58,7 +58,7 @@ class CylinderFlowDataContract:
         )
         frames = int(payload.get("frames", default_frames))
         temporal_stride = int(payload.get("temporal_stride", 1))
-        raw_frame_dt = float(payload.get("raw_frame_dt", 0.01))
+        raw_frame_dt = float(payload.get("raw_frame_dt", 0.0002))
         frame_dt = float(payload.get("frame_dt", raw_frame_dt * temporal_stride))
         if frames < 1 or temporal_stride < 1:
             raise ValueError("CylinderFlow frame count and stride must be positive")
@@ -186,7 +186,7 @@ def build_cylinderflow_transform(
         [
             ScaleEdgeAttr(0.15),
             NormalizeCylinderFlow(normalization),
-            AddDirichletMask(3, [0, 1], dirichlet_boundary_id=[2, 4]),
+            AddDirichletMask(3, [0, 1], dirichlet_boundary_id=[]),
             MeshCoarsening(
                 num_scales=5,
                 rel_pos_scaling=[0.15, 0.3, 0.6, 1.2, 2.4],
@@ -279,17 +279,15 @@ class CylinderFlowH5Dataset(torch.utils.data.Dataset):
         graph.bound = torch.full((pos.size(0),), 0, dtype=torch.uint8)
         graph.bound[node_type == 4] = 2
         graph.bound[node_type == 5] = 3
-        graph.bound[node_type == 6] = 4
-        supported = (
-            (node_type == 0) | (node_type == 4) | (node_type == 5) | (node_type == 6)
-        )
+        graph.bound[node_type == 2] = 4
+        supported = (node_type == 0) | (node_type == 4) | (node_type == 2)
         if not bool(supported.all()):
             unknown = torch.unique(node_type[~supported]).tolist()
             raise ValueError(f"unsupported CylinderFlow node types: {unknown}")
         graph.omega = torch.zeros(pos.size(0), 3, dtype=torch.float32)
         graph.omega[(node_type == 0) | (node_type == 5), 0] = 1.0
         graph.omega[node_type == 4, 1] = 1.0
-        graph.omega[node_type == 6, 2] = 1.0
+        graph.omega[node_type == 2, 2] = 1.0
         graph.edge_index = triangle_cells_to_edge_index(cells)
         graph.edge_attr = pos[graph.edge_index[1]] - pos[graph.edge_index[0]]
         if cell_list:

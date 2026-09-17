@@ -71,13 +71,13 @@ def validate_config(config: dict) -> None:
         "mlp_ratio": 4.0,
         "future_frames": 64,
         "diffusion_steps": 1000,
-        "latent_features": 1,
-        "condition_features": 126,
     }
     if any(model.get(key) != value for key, value in fixed.items()):
-        raise ValueError(
-            "H1, eight heads, joint64 and the frozen representation must stay fixed"
-        )
+        raise ValueError("H1, eight heads and joint64 must stay fixed")
+    for name in ("latent_features", "condition_features"):
+        value = model.get(name)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError(f"model.{name} must be a positive integer")
     world = config.get("distributed", {}).get("world_size", 1)
     if not isinstance(world, int) or isinstance(world, bool) or world < 1:
         raise ValueError("world_size must be a positive integer")

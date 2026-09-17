@@ -132,7 +132,7 @@ def render(inputs, output_dir, labels=None, every=1, fps=12.5, scales_file=None)
                 for artist, values in artists:
                     artist.set_array(values[frame])
                 figure.suptitle(
-                    f"stored frame {frame}/64 | raw index {frame * 8} | t={frame * 0.08:.2f} s",
+                    f"stored frame {frame}/64 | raw index {frame * 8} | t={frame * 0.0016:.4f} s",
                     fontsize=13,
                 )
                 figure.canvas.draw()

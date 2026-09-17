@@ -27,14 +27,14 @@ class AddDirichletMask:
         )
 
     def __call__(self, graph: Graph) -> Graph:
-        if len(self.dirichlet_features) == 0 or len(self.dirichlet_boundary_id) == 0:
-            return graph
         graph.dirichlet_mask = torch.zeros(
             graph.num_nodes,
             self.num_features,
             dtype=torch.bool,
             device=graph.pos.device,
         )
+        if len(self.dirichlet_features) == 0 or len(self.dirichlet_boundary_id) == 0:
+            return graph
         for id in self.dirichlet_boundary_id:
             graph.dirichlet_mask[:, self.dirichlet_features] += (
                 graph.bound == id

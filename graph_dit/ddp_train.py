@@ -119,7 +119,7 @@ def train_distributed(
     update = 0
     try:
         configure_runtime(device, training["precision"], allow_distributed=True)
-        identity = load_artifacts(artifacts)
+        identity = load_artifacts(artifacts, config=config)
         if identity["debug"] != debug:
             raise ValueError("formal/synthetic representation mismatch")
 

@@ -23,7 +23,7 @@ from . import EVALUATOR_VERSION
 from .data import Dataset
 from .metrics import compute_metrics, summarize_trajectories
 from .predictions import save_prediction, writeback_velocity, boundary_metrics
-from .representation import paths, load_artifacts
+from .representation import paths, load_artifacts, validate_model_representation
 from .runtime import (
     append_json,
     autocast,
@@ -52,6 +52,7 @@ class Predictor:
         self.model, self.device, self.precision = model, device, precision
         self.data = Dataset(*paths(data_dir), debug=debug)
         self.identity = load_artifacts(artifacts, self.data)
+        validate_model_representation(model.architecture(), self.identity)
         self.codec = FrozenUVPLatentCodec(
             str(artifacts / "autoencoder.pt"), device=device
         )
@@ -134,8 +135,6 @@ class Predictor:
             fields.append(self.normalization.denormalize(decoded).float().cpu().numpy())
         pre_boundary = np.stack(fields)
         if not diagnostics:
-            mask = np.isin(sample["node_type"], (4, 6))
-            pre_boundary[1:, mask, :2] = sample["initial"][None, mask, :2]
             return pre_boundary, None
         prediction = writeback_velocity(
             pre_boundary, sample["initial"], sample["node_type"]
@@ -222,7 +221,7 @@ def evaluate_model(
                 sample["points"],
                 sample["cells"],
                 sample["node_type"],
-                0.08,
+                0.0016,
             )
             metrics.update(
                 boundary_metrics(
@@ -289,7 +288,7 @@ def load_selected(
     checkpoint_file: Path, artifacts: Path, weights: str
 ) -> tuple[GraphVideoDiT, dict]:
     checkpoint = load_checkpoint(checkpoint_file)
-    identity = load_artifacts(artifacts)
+    identity = load_artifacts(artifacts, config=checkpoint["config"])
     if checkpoint.get("format") not in {
         "graph_dit.h1_b1.training.v1",
         "graph_dit.h1_ddp.training.v2",
