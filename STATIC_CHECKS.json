@@ -1,0 +1,31 @@
+{
+  "date": "2026-09-19",
+  "base_commit": "4901f33",
+  "branch": "feature/attention-ablation-4gpu",
+  "source_checks": {
+    "python_ast": {"passed": true, "files": 56, "syntax_version": "3.10", "application_imports": false},
+    "ruff": {"passed": true, "rules": ["F", "E9"], "changed_python_files": 15},
+    "bash_syntax": {"passed": true, "entrypoints": 2},
+    "git_diff_whitespace": {"passed": true}
+  },
+  "configuration_inspection": {
+    "passed": true,
+    "tasks": 9,
+    "variants": ["h1", "h2", "full"],
+    "training_seeds": [0, 1, 2],
+    "gpus_per_task": 4,
+    "windows_per_task": 250000,
+    "optimizer_updates_per_task": 62500,
+    "total_windows": 2250000,
+    "only_attention_and_seed_differ": true
+  },
+  "public_asset_head_requests": {
+    "pinned_epoch1180_autoencoder": {"http_status": 200, "bytes": 249943363},
+    "pinned_dataset_manifest": {"http_status": 200, "bytes": 411529}
+  },
+  "runtime_validation": {
+    "executed": false,
+    "reason": "No verified matching production four-GPU Linux/NCCL environment is available in this task.",
+    "target_entrypoint": "bash scripts/ablation_4gpu.sh preflight all"
+  }
+}

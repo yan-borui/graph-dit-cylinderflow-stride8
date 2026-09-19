@@ -292,6 +292,7 @@ def load_selected(
     checkpoint = load_checkpoint(checkpoint_file)
     identity = load_artifacts(artifacts, config=checkpoint["config"])
     if checkpoint.get("format") not in {
+        "graph_dit.attention_ablation4.training.v1",
         "graph_dit.h1_b1.training.v1",
         "graph_dit.h1_ddp.training.v2",
     }:

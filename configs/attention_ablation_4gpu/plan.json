@@ -1,0 +1,68 @@
+{
+  "protocol": "graph_dit.attention_ablation4.uvp_c4.v1",
+  "tasks": [
+    {
+      "id": "h1_seed0",
+      "index": 0,
+      "config": "h1_seed0.json",
+      "world_size": 4,
+      "stage_end_updates": 62500
+    },
+    {
+      "id": "h2_seed0",
+      "index": 1,
+      "config": "h2_seed0.json",
+      "world_size": 4,
+      "stage_end_updates": 62500
+    },
+    {
+      "id": "full_seed0",
+      "index": 2,
+      "config": "full_seed0.json",
+      "world_size": 4,
+      "stage_end_updates": 62500
+    },
+    {
+      "id": "h1_seed1",
+      "index": 3,
+      "config": "h1_seed1.json",
+      "world_size": 4,
+      "stage_end_updates": 62500
+    },
+    {
+      "id": "h2_seed1",
+      "index": 4,
+      "config": "h2_seed1.json",
+      "world_size": 4,
+      "stage_end_updates": 62500
+    },
+    {
+      "id": "full_seed1",
+      "index": 5,
+      "config": "full_seed1.json",
+      "world_size": 4,
+      "stage_end_updates": 62500
+    },
+    {
+      "id": "h1_seed2",
+      "index": 6,
+      "config": "h1_seed2.json",
+      "world_size": 4,
+      "stage_end_updates": 62500
+    },
+    {
+      "id": "h2_seed2",
+      "index": 7,
+      "config": "h2_seed2.json",
+      "world_size": 4,
+      "stage_end_updates": 62500
+    },
+    {
+      "id": "full_seed2",
+      "index": 8,
+      "config": "full_seed2.json",
+      "world_size": 4,
+      "stage_end_updates": 62500
+    }
+  ]
+}

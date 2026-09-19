@@ -8,6 +8,11 @@ from copy import deepcopy
 from pathlib import Path
 
 from . import TRAINING_PROTOCOL
+from .ablation_contract import (
+    PROTOCOL as ABLATION_PROTOCOL,
+    is_ablation,
+    validate_ablation,
+)
 from .physical_monitor import validate_policy
 
 
@@ -59,7 +64,7 @@ def resolve_window_config(config: dict) -> dict:
 
 
 def validate_config(config: dict) -> None:
-    if config.get("protocol") != TRAINING_PROTOCOL:
+    if config.get("protocol") not in (TRAINING_PROTOCOL, ABLATION_PROTOCOL):
         raise ValueError("unsupported training protocol")
     model, training, validation = (
         config[key] for key in ("model", "training", "validation")
@@ -72,7 +77,9 @@ def validate_config(config: dict) -> None:
         "future_frames": 64,
         "diffusion_steps": 1000,
     }
-    if any(model.get(key) != value for key, value in fixed.items()):
+    if is_ablation(config):
+        validate_ablation(config)
+    elif any(model.get(key) != value for key, value in fixed.items()):
         raise ValueError("H1, eight heads and joint64 must stay fixed")
     for name in ("latent_features", "condition_features"):
         value = model.get(name)

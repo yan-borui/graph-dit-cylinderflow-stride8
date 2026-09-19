@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from .campaign import leaderboard
+from .ablation_contract import variant_name
 from .runtime import read_jsonl, write_json
 
 
@@ -81,7 +82,7 @@ def report_run(run: Path, output: Path, *, movies: bool = False) -> None:
         else None
     )
     lines = [
-        f"Graph DiT | H1 | effective batch {config['training']['effective_batch']} | training seed {config['seed']} | {scope_label}",
+        f"Graph DiT | {variant_name(config)} | effective batch {config['training']['effective_batch']} | training seed {config['seed']} | {scope_label}",
         f"width={config['model']['width']}, blocks={config['model']['blocks']}, heads=8",
         f"LR={config['training']['learning_rate']:g}, floor={config['training']['min_learning_rate']:g}, schedule={config['training']['schedule']}, precision={config['training']['precision']}",
         f"schedule endpoint={config['training']['schedule_total_updates']:,}; allocated endpoint={status.get('stage_end_updates')}",

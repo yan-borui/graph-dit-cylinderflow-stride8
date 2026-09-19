@@ -111,9 +111,12 @@ def save_checkpoint(file_name: Path, payload: dict) -> None:
 
 def code_identity() -> dict:
     def git(*arguments):
-        result = subprocess.run(
-            ["git", "-C", str(ROOT), *arguments], capture_output=True, text=True
-        )
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(ROOT), *arguments], capture_output=True, text=True
+            )
+        except FileNotFoundError:
+            return "unavailable"
         return result.stdout.strip() if result.returncode == 0 else "unavailable"
 
     return {

@@ -18,6 +18,7 @@ from torch.nn.parallel import DistributedDataParallel
 
 from dgn4cfd.nn.diffusion.models.graph_video_dit import GraphVideoDiT
 from .config import learning_rate, validate_config
+from .ablation_contract import CHECKPOINT_FORMAT as ABLATION_CHECKPOINT, is_ablation
 from .distributed import Context, capture_rng, describe_device, restore_rng
 from .evaluate import Predictor, evaluate_model
 from .metrics import summarize_trajectories
@@ -112,6 +113,8 @@ def train_distributed(
 ):
     validate_config(config)
     training = config["training"]
+    ablation = is_ablation(config)
+    checkpoint_format = ABLATION_CHECKPOINT if ablation else CHECKPOINT_FORMAT
     if not 1 <= stage_end <= training["schedule_total_updates"]:
         raise ValueError("stage endpoint lies outside the immutable LR schedule")
     if (
@@ -126,7 +129,23 @@ def train_distributed(
     try:
         configure_runtime(device, training["precision"], allow_distributed=True)
         devices = ctx.all_call(lambda: describe_device(config, device))
+        environment = None
+        if ablation:
+            from .ablation_runtime import bind_environment
+
+            if (
+                not config.get("preflight_max_graph")
+                and stage_end != training["budget_updates"]
+            ):
+                raise ValueError(
+                    "formal ablation runs use the fixed 62,500-update endpoint"
+                )
+            environment = bind_environment(config, devices, run, ctx)
         identity = load_artifacts(artifacts, config=config)
+        if ablation:
+            from .ablation_runtime import bind_inputs
+
+            bind_inputs(identity, run, ctx)
         if identity["debug"] != debug:
             raise ValueError("formal/synthetic representation mismatch")
         identities = ctx.gather(
@@ -199,7 +218,7 @@ def train_distributed(
         if resume:
             saved = load_checkpoint(run / "recovery_latest.pt")
             if (
-                saved["format"] != CHECKPOINT_FORMAT
+                saved["format"] != checkpoint_format
                 or saved["config"] != config
                 or saved["artifact_id"] != identity["artifact_id"]
                 or len(saved["rank_states"]) != ctx.world
@@ -216,6 +235,41 @@ def train_distributed(
                 raise ValueError("invalid restored global sample cursor")
             elapsed_before, run_id = saved["elapsed_seconds"], saved["run_id"]
             costs.update(saved["costs"])
+            if ablation:
+                if saved.get("environment") != environment:
+                    raise ValueError(
+                        "resume environment differs from the saved four-card runtime"
+                    )
+                if config.get("preflight_max_graph"):
+                    from .ablation_runtime import state_equal
+
+                    def verify_restoration():
+                        checks = {
+                            "model": state_equal(
+                                cpu_state(model.state_dict()), saved["model"]
+                            ),
+                            "ema": state_equal(ema.states, saved["ema"]),
+                            "optimizer": state_equal(
+                                optimizer.state_dict(), saved["optimizer"]
+                            ),
+                            "rng": state_equal(capture_rng(device), local["rng"]),
+                            "training_generator": torch.equal(
+                                generator.get_state().cpu(), local["training_generator"]
+                            ),
+                        }
+                        if not all(checks.values()) or update != 4:
+                            raise RuntimeError(
+                                f"acceptance restoration mismatch: {checks}"
+                            )
+                        return {"rank": ctx.rank, "update": update, "checks": checks}
+
+                    restored = ctx.all_call(verify_restoration)
+                    ctx.primary_call(
+                        lambda: write_json(
+                            attempt_dir / "restored.json", {"ranks": restored}
+                        )
+                    )
+            del saved
         started = time.perf_counter()
         metadata = {
             "world_size": ctx.world,
@@ -225,6 +279,7 @@ def train_distributed(
             "parameter_count": sum(p.numel() for p in model.parameters()),
             "activation_checkpointing": model.activation_checkpointing,
             "gradient_as_bucket_view": ddp.gradient_as_bucket_view,
+            "environment": environment,
         }
         if (
             "scaling" in config
@@ -232,6 +287,13 @@ def train_distributed(
         ):
             raise ValueError(
                 "instantiated parameter count differs from the scaling plan"
+            )
+        if (
+            ablation
+            and metadata["parameter_count"] != config["ablation"]["parameter_count"]
+        ):
+            raise ValueError(
+                "instantiated parameter count differs from the ablation plan"
             )
         ctx.primary_call(
             lambda: write_json(
@@ -270,6 +332,15 @@ def train_distributed(
                 if row["failed_clips"] == 0
                 and row["score"] is not None
                 and math.isfinite(row["score"])
+                and (
+                    not ablation
+                    or (
+                        row["trajectory_count"]
+                        == (4 if config.get("preflight_max_graph") else 24)
+                        and row["clip_count"]
+                        == (12 if config.get("preflight_max_graph") else 72)
+                    )
+                )
             ]
             best = (
                 min(
@@ -312,7 +383,7 @@ def train_distributed(
                 save_checkpoint(
                     destination,
                     {
-                        "format": CHECKPOINT_FORMAT,
+                        "format": checkpoint_format,
                         "checkpoint_id": f"{run_id}:{update}",
                         "run_id": run_id,
                         "model": cpu_state(model.state_dict()),
@@ -349,6 +420,8 @@ def train_distributed(
             # Recovery must point to the state being evaluated even if this evaluation fails.
             checkpoint(run / "recovery_latest.pt")
             indices = monitor_indices(predictor.data.splits["validation"])
+            if ablation and config.get("preflight_max_graph"):
+                indices = indices[:4]
             seeds = config["validation"]["sampling_seeds"]
             raw, mode = cpu_state(model.state_dict()), model.training
             rng, noise = capture_rng(device), generator.get_state().cpu()
@@ -371,7 +444,9 @@ def train_distributed(
                         "examples_seen": update * ctx.world,
                         "training_seed": config["seed"],
                         "config": config,
-                        "scope": "validation24_monitor",
+                        "scope": "validation4_acceptance"
+                        if ablation and config.get("preflight_max_graph")
+                        else "validation24_monitor",
                         "debug": debug,
                         **metadata,
                         "training_gpu_hours": (
@@ -491,6 +566,7 @@ def train_distributed(
                 costs["train_update_seconds"] += time.perf_counter() - begin
                 if (
                     update == 1
+                    or (ablation and config.get("preflight_max_graph"))
                     or update % training["log_every_updates"] == 0
                     or update == stage_end
                 ):
@@ -602,6 +678,8 @@ def train_distributed(
                     validate_current()
         checkpoint(run / "recovery_latest.pt")
 
+        final_rank_memory = ctx.gather({"rank": ctx.rank, **peak_memory(device)})
+
         def finish():
             best = selection(True)
             endpoint = selection(True, endpoint=True)
@@ -613,6 +691,13 @@ def train_distributed(
                 "examples_seen": update * ctx.world,
                 "stage_end_updates": stage_end,
                 "elapsed_seconds": elapsed,
+                "rank_metrics": final_rank_memory,
+                "validation_gpu_hours": ctx.world * costs["validation_seconds"] / 3600,
+                "training_windows_per_second": (
+                    update * ctx.world / costs["train_update_seconds"]
+                    if costs["train_update_seconds"] > 0
+                    else None
+                ),
                 "selected_weights": best["weights"],
                 "selected_update": best["update"],
                 "endpoint_selected_weights": endpoint["weights"],

@@ -12,6 +12,7 @@ import numpy as np
 import torch
 
 from .config import load_config
+from .ablation_contract import is_ablation
 from .data import Dataset
 from .representation import load_artifacts, paths
 from .runtime import load_checkpoint, read_jsonl, write_json
@@ -260,6 +261,74 @@ def main() -> None:
     args = parser.parse_args()
     config = load_config(args.config)
     if config.get("distributed", {}).get("world_size", 1) > 1:
+        if is_ablation(config):
+            if args.updates != 8:
+                raise ValueError(
+                    "four-card ablation acceptance uses exactly eight updates"
+                )
+            config["preflight_max_graph"] = True
+            train_run(
+                config, args.artifacts, args.data_dir, args.output_dir, 4, args.device
+            )
+            train_run(
+                config,
+                args.artifacts,
+                args.data_dir,
+                args.output_dir,
+                8,
+                args.device,
+                resume=True,
+            )
+            # train_run closes its process group; only rank zero writes the receipt.
+            import os
+
+            if int(os.environ.get("RANK", "0")) == 0:
+                candidates = read_jsonl(args.output_dir / "candidates.jsonl")
+                expected = {
+                    (step, weight)
+                    for step in (4, 8)
+                    for weight in config["validation"]["weights"]
+                }
+                if {(row["update"], row["weights"]) for row in candidates} != expected:
+                    raise RuntimeError(
+                        "acceptance is missing saved/resumed physical evaluations"
+                    )
+                if any(
+                    row["failed_clips"]
+                    or row["clip_count"] != 12
+                    or row["trajectory_count"] != 4
+                    or row["score"] is None
+                    or not np.isfinite(row["score"])
+                    for row in candidates
+                ):
+                    raise RuntimeError(
+                        "acceptance requires complete Validation4 x 3 at updates 4 and 8"
+                    )
+                records = [
+                    row
+                    for attempt in sorted(args.output_dir.glob("attempt_*"))
+                    for row in read_jsonl(attempt / "training.jsonl")
+                ]
+                if [row["update"] for row in records] != list(range(1, 9)):
+                    raise RuntimeError("acceptance update sequence is not exactly 1..8")
+                restored = json.loads(
+                    (args.output_dir / "attempt_002/restored.json").read_text()
+                )
+                write_json(
+                    args.output_dir / "acceptance.json",
+                    {
+                        "state": "passed",
+                        "world_size": 4,
+                        "updates": 8,
+                        "resume_update": 4,
+                        "validation_trajectories": 4,
+                        "physical_clips": 72,
+                        "restored": restored,
+                        "config": config,
+                        "claim": "real four-GPU save/resume/evaluation acceptance; not convergence evidence",
+                    },
+                )
+            return
         if args.updates < 4:
             raise ValueError("at least four updates are required")
         if "scaling" in config and args.updates != 8:

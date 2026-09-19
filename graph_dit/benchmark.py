@@ -8,6 +8,7 @@ import time
 import torch
 
 from .evaluate import Predictor, load_selected
+from .ablation_contract import variant_name
 from .performance import benchmark, configure
 from .runtime import monitor_indices
 
@@ -33,7 +34,7 @@ def main() -> None:
     predictor = Predictor(model, args.artifacts, args.data_dir, device, "fp32")
     load_seconds = time.perf_counter() - begin
     benchmark(
-        method="graph_dit_h1",
+        method=f"graph_dit_{variant_name(checkpoint['config']).lower()}",
         indices=monitor_indices(predictor.data.splits["validation"]),
         load_case=predictor.load_case,
         predict=lambda sample: predictor.predict(sample, diagnostics=False)[0],

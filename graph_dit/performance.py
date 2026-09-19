@@ -207,20 +207,36 @@ def benchmark(
     models: Iterable[torch.nn.Module],
     model_load_seconds: float,
     formal: bool = True,
+    registry_indices: Iterable[int] | None = None,
 ) -> dict[str, Any]:
     """Benchmark one already-selected checkpoint; produce no quality ranking."""
     output_dir.mkdir(parents=True, exist_ok=False)
     indices = tuple(indices)
     if len(set(indices)) != len(indices) or not indices:
         raise ValueError("benchmark case indices must be nonempty and unique")
-    if formal and len(indices) != 24:
+    registry = tuple(
+        VALIDATION_TRAJECTORIES if registry_indices is None else registry_indices
+    )
+    if registry_indices is not None and (
+        indices != registry
+        or not registry
+        or tuple(index for index in VALIDATION_TRAJECTORIES if index in registry)
+        != registry
+    ):
+        raise ValueError("benchmark shard must be an ordered subset of Validation-24")
+    if formal and registry_indices is None and len(indices) != 24:
         raise ValueError("formal benchmark requires the fixed Validation-24 registry")
     inventory = model_inventory(models)
     sync(device)
     environment = runtime_identity(device)
     settings = {
         "protocol": PERFORMANCE_PROTOCOL,
-        "registry": "validation24" if formal else "synthetic_debug",
+        "registry": "validation24_shard"
+        if registry_indices is not None
+        else "validation24"
+        if formal
+        else "synthetic_debug",
+        "registry_indices": list(registry),
         "warmup_repeats_per_trajectory": WARMUP_REPEATS,
         "measured_repeats_per_trajectory": MEASURED_REPEATS,
         "microbatch": 1,
@@ -270,7 +286,7 @@ def benchmark(
         sample = load_case(index)
         input_load_seconds += time.perf_counter() - load_started
         trajectory = int(sample["trajectory_index"])
-        if formal and trajectory != VALIDATION_TRAJECTORIES[position]:
+        if formal and trajectory != registry[position]:
             raise ValueError(
                 "benchmark must use the fixed, ordered Validation-24 registry"
             )
