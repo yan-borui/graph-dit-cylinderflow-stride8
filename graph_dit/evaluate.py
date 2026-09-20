@@ -48,8 +48,10 @@ class Predictor:
         precision: str = "fp32",
         *,
         debug: bool = False,
+        sampling_steps: int = 20,
     ):
         self.model, self.device, self.precision = model, device, precision
+        self.sampling_steps = sampling_steps
         self.data = Dataset(*paths(data_dir), debug=debug)
         self.identity = load_artifacts(artifacts, self.data)
         validate_model_representation(model.architecture(), self.identity)
@@ -118,7 +120,7 @@ class Predictor:
                 context.positions[None],
                 graph_hops=hops,
                 generator=generator,
-                sampling_steps=20,
+                sampling_steps=self.sampling_steps,
             )
         fields = [np.asarray(sample["initial"], dtype=np.float32)]
         for raw_latent in future[0]:
@@ -153,7 +155,18 @@ def evaluate_model(
     *,
     fail_on_runtime_error: bool = False,
     resume: bool = False,
+    ensemble_size: int = 1,
 ) -> dict:
+    if ensemble_size < 1:
+        raise ValueError("ensemble_size must be positive")
+    if ensemble_size != 1 or predictor.sampling_steps != 20:
+        provenance = {
+            **provenance,
+            "sampling_steps": predictor.sampling_steps,
+            "ensemble_size": ensemble_size,
+            "aggregation": "physical_uvp_mean",
+            "member_label_rule": "ensemble_label * ensemble_size + member_index",
+        }
     output.mkdir(parents=True, exist_ok=resume)
     expected_identity = {
         **provenance,
@@ -187,12 +200,30 @@ def evaluate_model(
         for label in seeds:
             if (index, label) in completed:
                 continue
-            actual_seed = seed_draw(index, label)
+            member_seeds = [
+                seed_draw(index, label * ensemble_size + member)
+                for member in range(ensemble_size)
+            ]
+            actual_seed = member_seeds[0]
             error = None
             synchronize(predictor.device)
             begin = time.perf_counter()
             try:
-                prediction, pre = predictor.predict(sample, actual_seed)
+                if ensemble_size == 1:
+                    prediction, pre = predictor.predict(sample, actual_seed)
+                else:
+                    pre = None
+                    for member_seed in member_seeds:
+                        _, member_pre = predictor.predict(sample, member_seed)
+                        if pre is None:
+                            pre = member_pre.astype(np.float64)
+                        else:
+                            pre += member_pre
+                    pre /= ensemble_size
+                    pre[0] = sample["initial"]
+                    prediction = writeback_velocity(
+                        pre, sample["initial"], sample["node_type"]
+                    )
             except (RuntimeError, FloatingPointError) as failure:
                 if fail_on_runtime_error and isinstance(failure, RuntimeError):
                     write_json(
@@ -247,12 +278,18 @@ def evaluate_model(
                 node_type=sample["node_type"],
                 trajectory_index=index,
                 seed=label,
-                provenance={**provenance, "prng_seed": actual_seed, "failure": error},
+                provenance={
+                    **provenance,
+                    "prng_seed": actual_seed,
+                    "member_prng_seeds": member_seeds,
+                    "failure": error,
+                },
             )
             row = {
                 "trajectory_index": index,
                 "seed": label,
                 "prng_seed": actual_seed,
+                "member_prng_seeds": member_seeds,
                 **metrics,
                 "inference_seconds": seconds,
                 "error": error,
@@ -334,6 +371,7 @@ def main() -> None:
         args.data_dir,
         device,
         checkpoint["config"]["training"]["precision"],
+        sampling_steps=6,
     )
     indices = predictor.data.splits["validation"]
     if args.scope == "monitor":
@@ -341,7 +379,7 @@ def main() -> None:
     evaluate_model(
         predictor,
         indices,
-        [0, 1, 2],
+        [0],
         args.output_dir,
         {
             "checkpoint_id": checkpoint["checkpoint_id"],
@@ -352,6 +390,7 @@ def main() -> None:
             "artifact_id": checkpoint["artifact_id"],
             "scope": args.scope,
         },
+        ensemble_size=8,
     )
 
 

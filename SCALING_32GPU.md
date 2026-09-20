@@ -143,6 +143,13 @@ bash scripts/scaling_32gpu_node.sh train \
 需要报告全程最佳时，可在同样 torchrun 分配下调用 `graph_dit.scaling_evaluate --selection best`，
 它使用单独的 `best/` 结果目录。
 
+独立推理默认采用 S6/K8：每条轨迹使用标签 0–7 的八份独立噪声，各进行六步 DDIM
+采样，解码后在物理 UVP 空间以 float64 求均值，再评分并保存一份均值场。每条轨迹
+共 48 次去噪网络调用。初始帧和速度边界处理沿用现有规则；训练期间的 Validation24
+继续采用 20 步、三个单样本评分及原有权重选择规则。训练与评价启动命令保持一致。
+单独调用 `graph_dit.evaluate` 同样使用 S6/K8。评价记录包含步数、集成大小和成员
+随机种子；运行新推理配置时使用新的输出目录，续跑会核验配置身份。
+
 ```bash
 python -m graph_dit.scaling_report --cohort-dir "$COHORT" \
   --output-dir /shared/reports/gladit_scaling32_v1
@@ -158,7 +165,9 @@ python -m graph_dit.scaling_report --cohort-dir "$COHORT" \
   不把 GPU-hours 标为 FLOPs；精确 FLOPs 需另外统计当前稀疏 H1 和重计算实际运算。
 
 主指标为 `cylinderflow.physical_mesh.v1` 面积加权未来 64 帧 UV relative RMSE，
-每轨迹对三个采样 seed 平均，再对轨迹等权平均。完整评价文件同时保留压力、涡量、散度、
+训练验证先平均每轨迹的三个单样本分数，再对轨迹等权平均；完整推理评价先对每轨迹的
+八份物理场求均值，再计算该均值场的指标，最后对 100 条轨迹等权平均。
+完整评价文件同时保留压力、涡量、散度、
 能谱、相位等物理分项、失败和不利轨迹。Validation100 是完整验证集汇总，不标作新 Test。
 结论限定为该预设模型族、数据和共同配方；四个规模无需另行调出各自最优超参数。
 

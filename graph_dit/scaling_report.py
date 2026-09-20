@@ -168,7 +168,11 @@ def summarize(cohort: Path, output: Path) -> None:
                 or provenance.get("checkpoint_id") != endpoint.get("checkpoint_id")
                 or validation.get("failed_clips") != 0
                 or validation.get("trajectory_count") != 100
-                or validation.get("clip_count") != 300
+                or validation.get("clip_count") != 100
+                or validation.get("sampling_seeds") != [0]
+                or provenance.get("sampling_steps") != 6
+                or provenance.get("ensemble_size") != 8
+                or provenance.get("aggregation") != "physical_uvp_mean"
                 or not finite(validation.get("selection_uv_relative_rmse"))
             ):
                 raise ValueError(

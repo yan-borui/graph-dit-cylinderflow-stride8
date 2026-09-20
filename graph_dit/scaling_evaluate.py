@@ -63,6 +63,10 @@ def main() -> None:
             "config": config,
             "scope": "validation100_scaling",
             "selection": args.selection,
+            "sampling_steps": 6,
+            "ensemble_size": 8,
+            "aggregation": "physical_uvp_mean",
+            "member_label_rule": "ensemble_label * ensemble_size + member_index",
         }
         identities = ctx.gather(provenance)
         if any(item != identities[0] for item in identities):
@@ -71,7 +75,9 @@ def main() -> None:
             )
         del saved
         model.to(ctx.device)
-        predictor = Predictor(model, args.artifacts, args.data_dir, ctx.device, "fp32")
+        predictor = Predictor(
+            model, args.artifacts, args.data_dir, ctx.device, "fp32", sampling_steps=6
+        )
         output = args.output_dir / args.selection
 
         def prepare() -> None:
@@ -92,7 +98,7 @@ def main() -> None:
 
         ctx.primary_call(prepare)
         indices = predictor.data.splits["validation"]
-        seeds = config["validation"]["sampling_seeds"]
+        seeds = [0]
         ctx.all_call(
             lambda: evaluate_model(
                 predictor,
@@ -102,6 +108,7 @@ def main() -> None:
                 provenance,
                 fail_on_runtime_error=True,
                 resume=True,
+                ensemble_size=8,
             )
         )
         ctx.primary_call(
