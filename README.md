@@ -1,5 +1,7 @@
 # Graph DiT · CylinderFlow · H1
 
+**历史 checkpoint UV 误差表：**[逐点 Validation100、断点续跑与图片交接](TRAINING_CURVE.md)。
+
 **同机推理测速与 Validation100：**[运行说明与 Pareto 绘图交接](PARETO.md)。
 
 **2026-09-12 四卡搜索入口：**[12 组 H1 四卡配置与启动说明](FOUR_GPU.md)。每组 250k
