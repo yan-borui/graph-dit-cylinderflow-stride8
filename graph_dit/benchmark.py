@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 import time
+import sys
 
 import torch
 
@@ -13,6 +14,19 @@ from .runtime import monitor_indices
 
 
 def main() -> None:
+    if any(
+        flag in sys.argv
+        for flag in (
+            "--checkpoint",
+            "--campaign-id",
+            "--sampling-steps",
+            "--ensemble-sizes",
+        )
+    ):
+        from .pareto_run import main as run_grid
+
+        run_grid()
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", type=Path, required=True)
     parser.add_argument("--artifacts", type=Path, required=True)

@@ -26,6 +26,7 @@ from .data import Dataset, DATA_REPOSITORY, DATA_REVISION
 from .runtime import seed_everything, write_json
 
 ARTIFACT_FORMAT = "graph_dit.ae75.train_cache.v1"
+PERSONAL_AE_FORMAT = "vgae_cf.uvp_dit_autoencoder.v1"
 AE_ASSET = "vgae_stride8_epoch930.pt"
 AE_REPRESENTATION_ID = "cylinderflow_stride8_vgae_epoch930_release_v1"
 AE_REPOSITORY = "DingDong1921/graph-dit-cylinderflow-stride8"
@@ -190,7 +191,54 @@ def prepare(
     return identity
 
 
-def load_artifacts(directory: Path, data: Dataset | None = None) -> dict:
+def checkpoint_features(checkpoint: dict) -> dict:
+    """Read representation dimensions from either supported UVP weight export."""
+    arch = checkpoint.get("arch", {})
+    if arch.get("in_node_features") != 3:
+        raise ValueError("the frozen autoencoder must encode and decode UVP")
+    dimensions = {
+        "latent_features": arch.get("latent_node_features"),
+        "condition_features": arch.get("fnns_width"),
+    }
+    for name, value in dimensions.items():
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError(f"invalid autoencoder {name}")
+    if checkpoint.get("format") == PERSONAL_AE_FORMAT:
+        metadata = checkpoint.get("metadata", {})
+        if (
+            metadata.get("fields") != ["u", "v", "p"]
+            or metadata.get("architecture") != arch
+            or metadata.get("latent_channels") != dimensions["latent_features"]
+            or metadata.get("condition_features") != dimensions["condition_features"]
+            or metadata.get("representation_id") != checkpoint.get("representation_id")
+            or checkpoint.get("test_accessed") is not False
+        ):
+            raise ValueError("personal UVP export metadata is inconsistent")
+    return dimensions
+
+
+def validate_model_representation(model_config: dict, identity: dict) -> None:
+    """Bind the DiT input/output widths to the actual frozen representation."""
+    for name in ("latent_features", "condition_features"):
+        if model_config.get(name) != identity.get(name):
+            raise ValueError(f"DiT {name} differs from the frozen representation")
+
+
+def validate_representation_config(config: dict, identity: dict) -> None:
+    validate_model_representation(config["model"], identity)
+    for name, value in config.get("representation", {}).items():
+        if identity.get(name) != value:
+            raise ValueError(f"the requested representation differs: {name}")
+
+
+def load_artifacts(
+    directory: Path,
+    data: Dataset | None = None,
+    *,
+    config: dict | None = None,
+    autoencoder: Path | None = None,
+    inference_only: bool = False,
+) -> dict:
     identity = json.loads((directory / "artifact.json").read_text(encoding="utf-8"))
     if identity.get("format") != ARTIFACT_FORMAT or identity.get("state") != "complete":
         raise ValueError("representation preparation is incomplete or unsupported")
@@ -199,6 +247,32 @@ def load_artifacts(directory: Path, data: Dataset | None = None) -> dict:
         raise ValueError("representation checkpoint ID does not match artifacts")
     if ae.get("normalization") != identity["normalization"]:
         raise ValueError("representation normalization mismatch")
+    features = checkpoint_features(ae)
+    representation = {
+        **features,
+        "autoencoder_architecture": ae["arch"],
+        "autoencoder_format": ae.get("format"),
+        "vgae_config_id": ae.get("config_id"),
+        "autoencoder_seed": ae.get("seed"),
+        "autoencoder_mode": ae.get("mode"),
+    }
+    for name, value in representation.items():
+        if name in identity and identity[name] != value:
+            raise ValueError(f"prepared representation metadata differs: {name}")
+        identity[name] = value
+    if config is not None:
+        validate_representation_config(config, identity)
+    if autoencoder is not None:
+        requested = torch.load(autoencoder, map_location="cpu", weights_only=True)
+        if (
+            requested.get("representation_id") != identity["representation_id"]
+            or requested.get("normalization") != identity["normalization"]
+            or requested.get("dataset_revision") != ae.get("dataset_revision")
+            or requested.get("arch") != ae["arch"]
+        ):
+            raise ValueError(
+                "the explicitly requested autoencoder differs from the cache"
+            )
     if data is not None:
         if json.dumps(identity["data_identity"], sort_keys=True) != json.dumps(
             data.identity(), sort_keys=True
@@ -208,6 +282,18 @@ def load_artifacts(directory: Path, data: Dataset | None = None) -> dict:
             raise ValueError(
                 "dataset normalization differs from the frozen representation"
             )
+    if inference_only:
+        if ae.get("dataset_revision") != identity["dataset_revision"]:
+            raise ValueError("inference AE dataset revision differs from artifacts")
+        for name in ("latent_mean", "latent_std"):
+            values = np.asarray(identity[name], dtype=np.float32)
+            if (
+                values.shape != (features["latent_features"],)
+                or not np.isfinite(values).all()
+                or (name == "latent_std" and np.any(values <= 0))
+            ):
+                raise ValueError(f"invalid Train {name}")
+        return identity
     with h5py.File(directory / "train_latents.h5", "r") as cache:
         if cache.attrs.get("artifact_id") != identity["artifact_id"]:
             raise ValueError("latent cache ID does not match artifacts")
@@ -216,6 +302,36 @@ def load_artifacts(directory: Path, data: Dataset | None = None) -> dict:
             raise ValueError("latent cache is not exactly the declared Train split")
         if cache.attrs.get("representation_id") != identity["representation_id"]:
             raise ValueError("cache and autoencoder dependencies differ")
+        channels = features["latent_features"]
+        for name in ("latent_mean", "latent_std"):
+            values = np.asarray(identity[name], dtype=np.float32)
+            if (
+                values.shape != (channels,)
+                or not np.isfinite(values).all()
+                or (name == "latent_std" and np.any(values <= 0))
+                or not np.array_equal(cache[name][:], values)
+            ):
+                raise ValueError(f"invalid or inconsistent Train {name}")
+        for index in expected:
+            group = cache[f"sim_{index:05d}"]
+            latent_shape = group["latents"].shape
+            if (
+                len(latent_shape) != 3
+                or latent_shape[0] != 75
+                or latent_shape[2] != channels
+            ):
+                raise ValueError(
+                    f"Train latent dimensions differ at trajectory {index}"
+                )
+            nodes = latent_shape[1]
+            if (
+                group["node_context"].shape != (nodes, features["condition_features"])
+                or group["positions"].shape != (nodes, 2)
+                or group["graph_hops"].shape != (nodes, nodes)
+            ):
+                raise ValueError(
+                    f"Train graph context dimensions differ at trajectory {index}"
+                )
     return identity
 
 

@@ -23,7 +23,7 @@ from . import EVALUATOR_VERSION
 from .data import Dataset
 from .metrics import compute_metrics, summarize_trajectories
 from .predictions import save_prediction, writeback_velocity, boundary_metrics
-from .representation import paths, load_artifacts
+from .representation import paths, load_artifacts, validate_model_representation
 from .runtime import (
     append_json,
     autocast,
@@ -48,10 +48,18 @@ class Predictor:
         precision: str = "fp32",
         *,
         debug: bool = False,
+        sampling_steps: int = 20,
+        inference_only: bool = False,
     ):
         self.model, self.device, self.precision = model, device, precision
+        if not 2 <= sampling_steps <= model.diffusion_steps:
+            raise ValueError("sampling steps must be between 2 and diffusion_steps")
+        self.sampling_steps = sampling_steps
         self.data = Dataset(*paths(data_dir), debug=debug)
-        self.identity = load_artifacts(artifacts, self.data)
+        self.identity = load_artifacts(
+            artifacts, self.data, inference_only=inference_only
+        )
+        validate_model_representation(model.architecture(), self.identity)
         self.codec = FrozenUVPLatentCodec(
             str(artifacts / "autoencoder.pt"), device=device
         )
@@ -117,7 +125,7 @@ class Predictor:
                 context.positions[None],
                 graph_hops=hops,
                 generator=generator,
-                sampling_steps=20,
+                sampling_steps=self.sampling_steps,
             )
         fields = [np.asarray(sample["initial"], dtype=np.float32)]
         for raw_latent in future[0]:
@@ -286,19 +294,35 @@ def evaluate_model(
 
 
 def load_selected(
-    checkpoint_file: Path, artifacts: Path, weights: str
+    checkpoint_file: Path,
+    artifacts: Path,
+    weights: str,
+    *,
+    inference_only: bool = False,
 ) -> tuple[GraphVideoDiT, dict]:
     checkpoint = load_checkpoint(checkpoint_file)
-    identity = load_artifacts(artifacts)
+    identity = load_artifacts(
+        artifacts, config=checkpoint["config"], inference_only=inference_only
+    )
     if checkpoint.get("format") not in {
         "graph_dit.h1_b1.training.v1",
         "graph_dit.h1_ddp.training.v2",
+        "graph_dit.inference.v1",
     }:
         raise ValueError("unsupported standalone training checkpoint")
     if checkpoint["artifact_id"] != identity["artifact_id"]:
         raise ValueError("checkpoint and prepared representation differ")
     model = GraphVideoDiT(**checkpoint["config"]["model"])
-    state = checkpoint["model"] if weights == "raw" else checkpoint["ema"][weights]
+    if checkpoint["format"] == "graph_dit.inference.v1":
+        if checkpoint.get("representation_id") != identity["representation_id"]:
+            raise ValueError(
+                "inference checkpoint representation differs from artifacts"
+            )
+        if weights != checkpoint["weights"]:
+            raise ValueError("requested weights differ from the inference export")
+        state = checkpoint["model"]
+    else:
+        state = checkpoint["model"] if weights == "raw" else checkpoint["ema"][weights]
     model.load_state_dict(state, strict=True)
     return model.eval(), checkpoint
 

@@ -1,5 +1,7 @@
 # Graph DiT · CylinderFlow · H1
 
+**同机推理测速与 Validation100：**[运行说明与 Pareto 绘图交接](PARETO.md)。
+
 **2026-09-12 四卡搜索入口：**[12 组 H1 四卡配置与启动说明](FOUR_GPU.md)。每组 250k
 全局窗口、B4、62,500 updates，比较 250k/500k/1M 窗口 cosine，最低 LR 1e-6。
 下文保留原 B1 搜索的入口和复现说明；新四卡方案用独立配置与恢复格式。
