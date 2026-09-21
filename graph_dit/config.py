@@ -59,19 +59,47 @@ def resolve_window_config(config: dict) -> dict:
 
 
 def validate_config(config: dict) -> None:
-    if config.get("protocol") != TRAINING_PROTOCOL:
+    ablation_protocol = "graph_dit.airfoil.attention.ae75.joint65.locked.v1"
+    ablation = config.get("protocol") == ablation_protocol
+    if ablation:
+        variants = {
+            "h1": ("graph_hop_mask", 1),
+            "h2": ("graph_hop_mask", 2),
+            "full": ("full", None),
+        }
+        variant = config.get("attention_ablation")
+        if variant not in variants:
+            raise ValueError("attention ablation requires h1, h2, or full")
+        baseline_file = (
+            Path(__file__).resolve().parents[1]
+            / "configs"
+            / "airfoil_h1_w512_d24_4gpu.json"
+        )
+        expected = resolve_window_config(
+            json.loads(baseline_file.read_text(encoding="utf-8"))
+        )
+        expected["protocol"] = ablation_protocol
+        expected["attention_ablation"] = variant
+        mode, hops = variants[variant]
+        expected["model"].update(attention_mode=mode, graph_hop_limit=hops)
+        if config != expected:
+            raise ValueError(
+                "Airfoil attention ablation changes only attention "
+                "from the fixed four-GPU seed0 recipe"
+            )
+    elif config.get("protocol") != TRAINING_PROTOCOL or "attention_ablation" in config:
         raise ValueError("unsupported training protocol")
     model, training, validation = (
         config[key] for key in ("model", "training", "validation")
     )
     fixed = {
-        "attention_mode": "graph_hop_mask",
-        "graph_hop_limit": 1,
         "heads": 8,
         "mlp_ratio": 4.0,
         "future_frames": 64,
         "diffusion_steps": 1000,
     }
+    if not ablation:
+        fixed.update(attention_mode="graph_hop_mask", graph_hop_limit=1)
     if any(model.get(key) != value for key, value in fixed.items()):
         raise ValueError("H1, eight heads and joint64 must stay fixed")
     for name in ("latent_features", "condition_features"):

@@ -33,7 +33,7 @@ if [[ "$action" == resume ]]; then extra=(--resume); fi
 
 : "${AUTOENCODER:?Set AUTOENCODER to the trained Airfoil VGAE dit_autoencoder.pt export}"
 export ARTIFACTS_DIR=${ARTIFACTS_DIR:-${AUTOENCODER}.airfoil_latents}
-config="$code_root/configs/airfoil_h1_w512_d24_4gpu.json"
+config=${AIRFOIL_CONFIG:-$code_root/configs/airfoil_h1_w512_d24_4gpu.json}
 mkdir -p "$(dirname -- "$ARTIFACTS_DIR")"
 (
     flock 9
