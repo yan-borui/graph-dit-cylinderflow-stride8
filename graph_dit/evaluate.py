@@ -48,7 +48,11 @@ class Predictor:
         precision: str = "fp32",
         *,
         debug: bool = False,
+        sampling_steps: int = 20,
     ):
+        if not 2 <= sampling_steps <= model.diffusion_steps:
+            raise ValueError("sampling steps must be between 2 and diffusion_steps")
+        self.sampling_steps = sampling_steps
         self.model, self.device, self.precision = model, device, precision
         self.data = Dataset(*paths(data_dir), debug=debug)
         self.identity = load_artifacts(artifacts, self.data)
@@ -118,7 +122,7 @@ class Predictor:
                 context.positions[None],
                 graph_hops=hops,
                 generator=generator,
-                sampling_steps=20,
+                sampling_steps=self.sampling_steps,
             )
         fields = [np.asarray(sample["initial"], dtype=np.float32)]
         for raw_latent in future[0]:
@@ -141,6 +145,23 @@ class Predictor:
         )
         return prediction, pre_boundary
 
+    def predict_ensemble(
+        self, sample: dict, member_seeds: list[int]
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Average decoded physical UVP fields while preserving the initial frame."""
+        if not member_seeds:
+            raise ValueError("an ensemble requires at least one member")
+        mean = None
+        for member_seed in member_seeds:
+            member, _ = self.predict(sample, member_seed, diagnostics=False)
+            if mean is None:
+                mean = member.astype(np.float64)
+            else:
+                mean += member
+        mean /= len(member_seeds)
+        mean[0] = sample["initial"]
+        return writeback_velocity(mean, sample["initial"], sample["node_type"]), mean
+
 
 def evaluate_model(
     predictor: Predictor,
@@ -151,7 +172,18 @@ def evaluate_model(
     *,
     fail_on_runtime_error: bool = False,
     resume: bool = False,
+    ensemble_size: int = 1,
 ) -> dict:
+    if ensemble_size < 1:
+        raise ValueError("ensemble_size must be positive")
+    if ensemble_size != 1 or predictor.sampling_steps != 20:
+        provenance = {
+            **provenance,
+            "sampling_steps": predictor.sampling_steps,
+            "ensemble_size": ensemble_size,
+            "aggregation": "physical_uvp_mean",
+            "member_label_rule": "ensemble_label * ensemble_size + member_index",
+        }
     output.mkdir(parents=True, exist_ok=resume)
     expected_identity = {
         **provenance,
@@ -185,12 +217,19 @@ def evaluate_model(
         for label in seeds:
             if (index, label) in completed:
                 continue
-            actual_seed = seed_draw(index, label)
+            member_seeds = [
+                seed_draw(index, label * ensemble_size + member)
+                for member in range(ensemble_size)
+            ]
+            actual_seed = member_seeds[0]
             error = None
             synchronize(predictor.device)
             begin = time.perf_counter()
             try:
-                prediction, pre = predictor.predict(sample, actual_seed)
+                if ensemble_size == 1:
+                    prediction, pre = predictor.predict(sample, actual_seed)
+                else:
+                    prediction, pre = predictor.predict_ensemble(sample, member_seeds)
             except (RuntimeError, FloatingPointError) as failure:
                 if fail_on_runtime_error and isinstance(failure, RuntimeError):
                     write_json(
@@ -245,12 +284,18 @@ def evaluate_model(
                 node_type=sample["node_type"],
                 trajectory_index=index,
                 seed=label,
-                provenance={**provenance, "prng_seed": actual_seed, "failure": error},
+                provenance={
+                    **provenance,
+                    "prng_seed": actual_seed,
+                    "member_prng_seeds": member_seeds,
+                    "failure": error,
+                },
             )
             row = {
                 "trajectory_index": index,
                 "seed": label,
                 "prng_seed": actual_seed,
+                "member_prng_seeds": member_seeds,
                 **metrics,
                 "inference_seconds": seconds,
                 "error": error,
@@ -332,6 +377,7 @@ def main() -> None:
         args.data_dir,
         device,
         checkpoint["config"]["training"]["precision"],
+        sampling_steps=6,
     )
     indices = predictor.data.splits["validation"]
     if args.scope == "monitor":
@@ -339,7 +385,7 @@ def main() -> None:
     evaluate_model(
         predictor,
         indices,
-        [0, 1, 2],
+        [0],
         args.output_dir,
         {
             "checkpoint_id": checkpoint["checkpoint_id"],
@@ -350,6 +396,7 @@ def main() -> None:
             "artifact_id": checkpoint["artifact_id"],
             "scope": args.scope,
         },
+        ensemble_size=8,
     )
 
 

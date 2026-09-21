@@ -8,7 +8,7 @@ import time
 import torch
 
 from .evaluate import Predictor, load_selected
-from .performance import benchmark, configure
+from .performance import benchmark, configure, seed_draw
 from .runtime import monitor_indices
 
 
@@ -30,13 +30,18 @@ def main() -> None:
         args.run / selected["checkpoint"], args.artifacts, selected["weights"]
     )
     model.to(device)
-    predictor = Predictor(model, args.artifacts, args.data_dir, device, "fp32")
+    predictor = Predictor(
+        model, args.artifacts, args.data_dir, device, "fp32", sampling_steps=6
+    )
     load_seconds = time.perf_counter() - begin
     benchmark(
         method="graph_dit_h1",
         indices=monitor_indices(predictor.data.splits["validation"]),
         load_case=predictor.load_case,
-        predict=lambda sample: predictor.predict(sample, diagnostics=False)[0],
+        predict=lambda sample: predictor.predict_ensemble(
+            sample,
+            [seed_draw(sample["trajectory_index"], member) for member in range(8)],
+        )[0],
         device=device,
         output_dir=args.output_dir,
         data_identity=predictor.data.identity(),
@@ -47,6 +52,10 @@ def main() -> None:
             "training_seed": checkpoint["config"]["seed"],
             "update": checkpoint["update"],
             "training_precision": checkpoint["config"]["training"]["precision"],
+            "sampling_steps": 6,
+            "ensemble_size": 8,
+            "aggregation": "physical_uvp_mean",
+            "member_label_rule": "ensemble_label * ensemble_size + member_index",
         },
         models=[model, predictor.codec.autoencoder],
         model_load_seconds=load_seconds,

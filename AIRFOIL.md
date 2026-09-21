@@ -98,6 +98,22 @@ prepare在分配内的cuda:0编码Train75帧缓存；train通过torchrun启动4�
 缓存绑定Airfoil归一化、VGAE表示ID、结构及选中权重，Validation不加入Train latent统计。
 结果目录保存原生checkpoint、滚动恢复、每轮物理评价、逐样例预测及选中权重索引。
 
+## 独立推理与测速
+
+独立评价与测速采用 S6/K8。每条轨迹使用八份独立噪声，各进行六步 DDIM 采样，
+解码到物理 UVP 后以 float64 求均值，再评分并保存一份均值场，共调用去噪网络48次。
+首帧保持观测值，未来64帧的所有节点UVP由模型预测。评价记录包含采样步数、
+集成大小及成员随机种子。训练期间的Validation-24沿用上述20步、三次独立评分的选优协议。
+
+完成训练后，使用新的输出目录运行：
+
+```bash
+python -m graph_dit.evaluate --run "$RESULT_ROOT" --artifacts "$ARTIFACTS_DIR" \
+    --data-dir "$DATA_DIR" --output-dir "${RESULT_ROOT}_validation_s6_k8" --device cuda:0
+python -m graph_dit.benchmark --run "$RESULT_ROOT" --artifacts "$ARTIFACTS_DIR" \
+    --data-dir "$DATA_DIR" --output-dir "${RESULT_ROOT}_benchmark_s6_k8" --device cuda:0
+```
+
 ## 本次验证范围
 
 本次完成源码、配置、Python/JSON/TOML语法、shell `bash -n`、Ruff F/E9和Git空白检查。
