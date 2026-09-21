@@ -25,9 +25,20 @@ def _channels(field, points, cells, weights):
     return [np.linalg.norm(field[..., :2], axis=-1), pressure, vorticity]
 
 
-def render(inputs, output_dir, labels=None, every=1, fps=12.5, scales_file=None):
+def render(
+    inputs,
+    output_dir,
+    labels=None,
+    every=1,
+    fps=12.5,
+    scales_file=None,
+    snapshots=None,
+    snapshot_pdf=False,
+):
     if every < 1 or fps <= 0:
         raise ValueError("every and fps must be positive")
+    if snapshots is not None and any(frame < 0 or frame > 64 for frame in snapshots):
+        raise ValueError("snapshot frames must be in 0..64")
     started = time.perf_counter()
     output_dir.mkdir(parents=True, exist_ok=False)
     bundles = []
@@ -90,6 +101,9 @@ def render(inputs, output_dir, labels=None, every=1, fps=12.5, scales_file=None)
     )
     triangles = mtri.Triangulation(points[:, 0], points[:, 1], cells)
     selected = sorted(set(range(0, 65, every)) | {64})
+    snapshot_frames = (
+        {0, selected[len(selected) // 2], 64} if snapshots is None else set(snapshots)
+    )
     figure, axes = plt.subplots(
         3, 1 + 2 * len(bundles), figsize=(5 * (1 + 2 * len(bundles)), 8), squeeze=False
     )
@@ -128,25 +142,36 @@ def render(inputs, output_dir, labels=None, every=1, fps=12.5, scales_file=None)
             macro_block_size=2,
             quality=8,
         ) as video:
-            for frame in selected:
+            for frame in sorted(set(selected) | snapshot_frames):
                 for artist, values in artists:
                     artist.set_array(values[frame])
                 figure.suptitle(
-                    f"stored frame {frame}/64 | raw index {frame * 8} | t={frame * 0.08:.2f} s",
+                    f"stored frame {frame}/64 | raw index {int(first['raw_frame_indices'][frame])} | "
+                    f"t={float(first['physical_time'][frame]):.4g} s",
                     fontsize=13,
                 )
                 figure.canvas.draw()
                 pixels = np.asarray(figure.canvas.buffer_rgba())[..., :3].copy()
-                gif.append_data(pixels)
-                video.append_data(pixels)
-                if frame in {0, selected[len(selected) // 2], 64}:
+                if frame in selected:
+                    gif.append_data(pixels)
+                    video.append_data(pixels)
+                if frame in snapshot_frames:
                     figure.savefig(output_dir / f"frame_{frame:03d}.png", dpi=120)
+                    if snapshot_pdf:
+                        figure.savefig(output_dir / f"frame_{frame:03d}.pdf")
     plt.close(figure)
     result = {
         "frames": selected,
+        "snapshot_frames": sorted(snapshot_frames),
         "render_seconds": time.perf_counter() - started,
         "inference_included": False,
-        "files": ["comparison.gif", "comparison.mp4", "scales.json"],
+        "files": ["comparison.gif", "comparison.mp4", "scales.json"]
+        + [f"frame_{frame:03d}.png" for frame in sorted(snapshot_frames)]
+        + (
+            [f"frame_{frame:03d}.pdf" for frame in sorted(snapshot_frames)]
+            if snapshot_pdf
+            else []
+        ),
     }
     write_json(output_dir / "render.json", result)
     return result
