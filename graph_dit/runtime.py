@@ -173,24 +173,10 @@ def monitor_indices(indices: tuple[int, ...]) -> tuple[int, ...]:
 
 
 def acquire_run_lock(directory: Path):
-    """Keep an OS lock until training exits; a crash releases it automatically."""
-    handle = (directory / ".run.lock").open("a+b")
-    try:
-        if os.name == "nt":
-            import msvcrt
+    """Exclude concurrent writers using an atomic shared-directory lock."""
+    from .portable_lock import DirectoryLock
 
-            handle.write(b"0")
-            handle.flush()
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        handle.close()
-        raise RuntimeError("this run directory already has an active training process")
-    return handle
+    return DirectoryLock(directory / ".run.lock").acquire()
 
 
 def sample_seed(training_seed: int, trajectory: int, sampling_seed: int) -> int:

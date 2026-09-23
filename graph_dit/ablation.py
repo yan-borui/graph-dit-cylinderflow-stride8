@@ -28,8 +28,9 @@ def config_file(task: str) -> Path:
 
 def prepare_inputs(data_dir: Path, artifacts: Path, autoencoder: Path) -> None:
     """Publish one complete cache under a shared lock; retain failed attempts."""
-    import fcntl
     import torch
+
+    from .portable_lock import DirectoryLock
 
     from .config import load_config
     from .data import DATA_REVISION
@@ -44,12 +45,10 @@ def prepare_inputs(data_dir: Path, artifacts: Path, autoencoder: Path) -> None:
 
     config = load_config(config_file("h1_seed0"))
     data_dir.parent.mkdir(parents=True, exist_ok=True)
-    with data_dir.with_name(data_dir.name + ".download.lock").open("a+b") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+    with DirectoryLock(data_dir.with_name(data_dir.name + ".download.lock"), wait=True):
         data = fetch_data(data_dir)
     autoencoder.parent.mkdir(parents=True, exist_ok=True)
-    with autoencoder.with_name(autoencoder.name + ".lock").open("a+b") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+    with DirectoryLock(autoencoder.with_name(autoencoder.name + ".lock"), wait=True):
         downloaded = not autoencoder.exists()
         candidate = autoencoder
         if downloaded:
@@ -91,8 +90,7 @@ def prepare_inputs(data_dir: Path, artifacts: Path, autoencoder: Path) -> None:
         if downloaded:
             os.replace(candidate, autoencoder)
     artifacts.parent.mkdir(parents=True, exist_ok=True)
-    with artifacts.with_name(artifacts.name + ".lock").open("a+b") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+    with DirectoryLock(artifacts.with_name(artifacts.name + ".lock"), wait=True):
         if not artifacts.exists():
             attempt = Path(
                 tempfile.mkdtemp(

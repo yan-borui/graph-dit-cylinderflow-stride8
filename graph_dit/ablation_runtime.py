@@ -121,8 +121,9 @@ def bind_environment(
     config: dict, devices: list[dict], run: Path, ctx: Context
 ) -> dict:
     """Bind every task and its acceptance to the same cohort environment."""
-    import fcntl
     import json
+
+    from .portable_lock import DirectoryLock
 
     signatures = ctx.all_call(lambda: environment_signature(devices))
     if any(item != signatures[0] for item in signatures):
@@ -133,8 +134,7 @@ def bind_environment(
         # Both cohort/runs/task and cohort/preflight/task share this parent.
         cohort = run.parent.parent
         cohort.mkdir(parents=True, exist_ok=True)
-        with (cohort / ".environment.lock").open("a+b") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX)
+        with DirectoryLock((cohort / ".environment.lock"), wait=True):
             receipt = cohort / "environment.json"
             if receipt.exists():
                 if json.loads(receipt.read_text()) != signature:
@@ -167,8 +167,9 @@ def state_equal(left: Any, right: Any) -> bool:
 
 def bind_inputs(identity: dict, run: Path, ctx: Context) -> None:
     """Freeze one source snapshot and cache/data identity for the whole campaign."""
-    import fcntl
     import json
+
+    from .portable_lock import DirectoryLock
 
     from .train import freeze_source
 
@@ -183,8 +184,7 @@ def bind_inputs(identity: dict, run: Path, ctx: Context) -> None:
                 "normalization",
             )
         }
-        with (cohort / ".inputs.lock").open("a+b") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX)
+        with DirectoryLock((cohort / ".inputs.lock"), wait=True):
             destination = cohort / "inputs.json"
             if destination.exists() and json.loads(destination.read_text()) != receipt:
                 raise ValueError(
