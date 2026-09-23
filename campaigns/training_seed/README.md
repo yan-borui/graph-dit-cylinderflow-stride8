@@ -9,7 +9,17 @@
 
 将原正式运行的冻结源码复制到独立源码目录，并保留其原始配置及
 `cylinderflow_upstream.json`。将本目录的 seed1 配置复制到该源码的 `configs/`，
-两个 shell 入口复制到 `scripts/`。运行使用这份冻结源码中的训练、表示和验收模块。
+三个 shell 入口复制到 `scripts/`。运行使用这份独立源码中的训练、表示和验收模块。
+
+NAS 使用本交付的 [NAS 说明](../../NAS.md)。在独立源码副本准备好后，从本交付仓库运行：
+
+```bash
+: "${REPO_DIR:?Set REPO_DIR to the independent source copy for this new seed}"
+python campaigns/training_seed/adapt_nas_source.py --source "$REPO_DIR"
+cp scripts/nas.sh "$REPO_DIR/scripts/nas.sh"
+```
+
+适配器备份并替换源码副本中的运行目录锁，加入标准库目录锁实现。源身份会随之改变；新训练与验收使用全新目录，原运行保留原源码。
 
 激活原生产环境后，设置 `PYTHON`、`DATA_DIR`、`AUTOENCODER` 和 `ARTIFACTS_DIR`。
 VGAE 使用原选优导出，缓存绑定同一表示和 Train 统计。为新实验分配约 70 GB 空间，
@@ -24,7 +34,7 @@ export ACCEPTANCE_DIR="$EXPERIMENT_DIR/acceptance"
 export LAUNCH_DIR="$EXPERIMENT_DIR/launcher"
 cd "$REPO_DIR"
 mkdir -p "$LAUNCH_DIR"
-nohup setsid bash scripts/launch_training_seed.sh </dev/null >"$LAUNCH_DIR/bootstrap.log" 2>&1 &
+nohup setsid bash scripts/nas.sh bash scripts/launch_training_seed.sh </dev/null >"$LAUNCH_DIR/bootstrap.log" 2>&1 &
 ```
 
 入口依次执行表示验证、既有八步保存恢复验收和新种子正式训练。
@@ -35,7 +45,7 @@ nohup setsid bash scripts/launch_training_seed.sh </dev/null >"$LAUNCH_DIR/boots
 `retrain_h1.sh` 可通过 `CONFIG` 选择种子配置，默认仍使用冻结源码原 seed0 配置。
 新种子使用新的运行目录；原运行继续保留其模型、源码和恢复状态。
 
-## 本轮运行证据
+## 原生产运行证据
 
 目标机器已通过八步验收，包括第 4 步保存后恢复到第 8 步，以及原始权重、
 两套 EMA 的 18 段真实物理评价。新种子已从头进入正式训练。

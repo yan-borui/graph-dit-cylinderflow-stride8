@@ -5,7 +5,15 @@ __pycache__/
 data/
 artifacts/
 runs/
-campaigns/
+campaigns/*
+!campaigns/training_seed/
+campaigns/training_seed/*
+!campaigns/training_seed/README.md
+!campaigns/training_seed/adapt_nas_source.py
+!campaigns/training_seed/h1_w512_d24_cosine1m_uvp_c4_seed1.json
+!campaigns/training_seed/launch_training_seed.sh
+!campaigns/training_seed/launch_training_seed_body.sh
+!campaigns/training_seed/retrain_h1.sh
 reports/
 *.h5
 *.chk
