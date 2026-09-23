@@ -1,5 +1,7 @@
 # Graph DiT · CylinderFlow · H1
 
+**NAS 运行：**[启动入口与共享目录设置](NAS.md)。
+
 **本分支：32 张 L20 的四档模型 scaling。** 使用
 [SCALING_32GPU.md](SCALING_32GPU.md) 的入口，固定 B32、FP32、125k updates、
 115M/258M/459M/610M，每档三个训练 seed。已加入 block 激活重计算、多节点启动、
