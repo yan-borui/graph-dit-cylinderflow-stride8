@@ -63,7 +63,7 @@ def configure_runtime(
         torch.cuda.set_device(device)
         if precision == "bf16" and not torch.cuda.is_bf16_supported():
             raise ValueError("this device does not support BF16")
-        # Keep FP32 SDPA backends fixed for dense and exact H1-neighborhood execution.
+        # Keep FP32 SDPA backends fixed for dense and exact H1/H2 neighborhoods.
         torch.backends.cuda.enable_flash_sdp(False)
         torch.backends.cuda.enable_mem_efficient_sdp(True)
         torch.backends.cuda.enable_math_sdp(True)

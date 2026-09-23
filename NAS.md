@@ -35,6 +35,13 @@ bash scripts/nas.sh bash scripts/airfoil_ablation_4gpu.sh train h1
 
 其他结构与汇总见 [Airfoil 消融](AIRFOIL_ABLATION.md)。
 
+H2 使用精确两跳邻域 SDPA。启动 H2 时选择新的实验目录，复用既有 Airfoil VGAE 与缓存：
+
+```bash
+export COHORT="$NAS_ROOT/runs/airfoil_attention_sdpa"
+bash scripts/nas.sh bash scripts/airfoil_ablation_4gpu.sh train h2
+```
+
 ## 共享目录与恢复
 
 - 全部参与同一准备目录的进程使用本修复版本；旧版与新版各自采用不同锁协议。切换共享准备入口前，确认原准备任务已经退出。已有训练继续使用自己的冻结源码。

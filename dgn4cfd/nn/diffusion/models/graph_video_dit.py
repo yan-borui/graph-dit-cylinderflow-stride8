@@ -88,7 +88,7 @@ class JointDiTBlock(nn.Module):
     def _neighbor_attention(
         self, inputs: torch.Tensor, total_slots: int, layout: NeighborLayout
     ) -> torch.Tensor:
-        """Evaluate exactly the unmasked H1 keys, grouped by spatial degree."""
+        """Evaluate exact H1/H2 neighborhood keys with SDPA, grouped by degree."""
         batch_size, token_count, width = inputs.shape
         num_nodes = token_count // total_slots
         heads = self.attention.num_heads
@@ -205,7 +205,7 @@ class GraphVideoDiT(nn.Module):
 
     Public tensor axes are ``B`` graphs, ``S`` frame slots, ``N`` coarsest graph
     nodes, and ``C`` latent features. Personal retraining uses ``B=1``, ``S=1+64``
-    and ``C=4``; legacy representations remain configurable. H1 evaluates the
+    and ``C=4``; legacy representations remain configurable. H1/H2 evaluate the
     exact graph-hop neighborhood, including all frame slots for every neighbor.
     """
 
@@ -442,7 +442,7 @@ class GraphVideoDiT(nn.Module):
     def _neighbor_layout(self, graph_hops: torch.Tensor) -> NeighborLayout:
         """Group rows by degree without padding or dropping an allowed connection."""
         batch_size, num_nodes, _ = graph_hops.shape
-        allowed = (graph_hops >= 0) & (graph_hops <= 1)
+        allowed = (graph_hops >= 0) & (graph_hops <= int(self.graph_hop_limit))
         node_indices = torch.arange(num_nodes, device=graph_hops.device)
         neighbors = torch.where(allowed, node_indices, num_nodes).sort(dim=-1).values
         neighbors = neighbors.reshape(batch_size * num_nodes, num_nodes)
@@ -581,7 +581,7 @@ class GraphVideoDiT(nn.Module):
         )
         neighbor_layout = None
         attention_bias = None
-        if self.attention_mode == "graph_hop_mask" and self.graph_hop_limit == 1:
+        if self.attention_mode == "graph_hop_mask":
             neighbor_layout = self._neighbor_layout(graph_hops)
         else:
             attention_bias = self._attention_bias(
