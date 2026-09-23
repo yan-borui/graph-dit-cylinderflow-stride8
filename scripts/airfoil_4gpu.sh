@@ -35,20 +35,8 @@ if [[ "$action" == resume ]]; then extra=(--resume); fi
 export ARTIFACTS_DIR=${ARTIFACTS_DIR:-${AUTOENCODER}.airfoil_latents}
 config=${AIRFOIL_CONFIG:-$code_root/configs/airfoil_h1_w512_d24_4gpu.json}
 mkdir -p "$(dirname -- "$ARTIFACTS_DIR")"
-(
-    flock 9
-    if [[ ! -f "$ARTIFACTS_DIR/train_latents.h5" ]]; then
-        : "${CUDA_VISIBLE_DEVICES:?Set allocated GPU IDs for representation preparation}"
-        if [[ -e "$ARTIFACTS_DIR" ]]; then
-            printf 'Incomplete representation exists: %s; choose a new ARTIFACTS_DIR.\n' "$ARTIFACTS_DIR" >&2; exit 2
-        fi
-        attempt=$(mktemp -d "${ARTIFACTS_DIR}.attempt.XXXXXX")
-        "$python_bin" -m graph_dit.representation prepare --data-dir "$DATA_DIR" \
-            --autoencoder "$AUTOENCODER" --output-dir "$attempt/artifacts" --device cuda:0 --config "$config" \
-            2>&1 | tee "$attempt/prepare.log"
-        mv -- "$attempt/artifacts" "$ARTIFACTS_DIR"
-    fi
-) 9>"${ARTIFACTS_DIR}.lock"
+"$python_bin" "$code_root/airfoil_data/portable_lock.py" --wait --lock "${ARTIFACTS_DIR}.lock" -- \
+    bash "$code_root/scripts/prepare_airfoil_cache.sh"
 "$python_bin" -m graph_dit.representation verify --data-dir "$DATA_DIR" \
     --autoencoder "$AUTOENCODER" --artifacts "$ARTIFACTS_DIR" --config "$config"
 if [[ "$action" == prepare ]]; then exit 0; fi

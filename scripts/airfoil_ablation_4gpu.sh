@@ -18,9 +18,6 @@ export AIRFOIL_CONFIG="$code_root/configs/airfoil_ablation_${variant}_4gpu.json"
 export RESULT_ROOT="$COHORT/${variant}_seed0"
 mkdir -p "$COHORT"
 # Hold one lock for this four-GPU cohort through preparation and training.
-exec 8>"$COHORT/launcher.lock"
-if ! flock -n 8; then
-    printf 'An attention task in this cohort already owns the launch lock.\n' >&2
-    exit 2
-fi
-exec bash "$code_root/scripts/airfoil_4gpu.sh" "$action"
+exec "${PYTHON:-python}" "$code_root/airfoil_data/portable_lock.py" \
+    --lock "$COHORT/launcher.lock" -- \
+    bash "$code_root/scripts/airfoil_4gpu.sh" "$action"
