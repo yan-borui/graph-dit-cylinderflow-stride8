@@ -98,6 +98,11 @@ prepare在分配内的cuda:0编码Train75帧缓存；train通过torchrun启动4�
 缓存绑定Airfoil归一化、VGAE表示ID、结构及选中权重，Validation不加入Train latent统计。
 结果目录保存原生checkpoint、滚动恢复、每轮物理评价、逐样例预测及选中权重索引。
 
+## 多次采样
+
+已选权重的 Validation100 重复生成、物理均值与方差、各 K 成本通过
+[多次采样入口](SAMPLING.md)运行，默认每条轨迹生成 16 次。
+
 ## 独立推理与测速
 
 独立评价与测速采用 S6/K8。每条轨迹使用八份独立噪声，各进行六步 DDIM 采样，

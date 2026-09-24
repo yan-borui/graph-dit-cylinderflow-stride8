@@ -42,6 +42,11 @@ export COHORT="$NAS_ROOT/runs/airfoil_attention_sdpa"
 bash scripts/nas.sh bash scripts/airfoil_ablation_4gpu.sh train h2
 ```
 
+## 多次采样
+
+已选权重的 Validation100 重复生成、物理均值与方差、各 K 成本通过
+[多次采样入口](SAMPLING.md)运行，默认每条轨迹生成 16 次。
+
 ## 共享目录与恢复
 
 - 全部参与同一准备目录的进程使用本修复版本；旧版与新版各自采用不同锁协议。切换共享准备入口前，确认原准备任务已经退出。已有训练继续使用自己的冻结源码。
