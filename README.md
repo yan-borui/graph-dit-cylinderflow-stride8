@@ -1,5 +1,9 @@
 # Graph DiT · CylinderFlow · 四卡注意力消融
 
+中间 checkpoint 的精度—训练时间导出与 AE+DiT 截点成本汇总见
+[Checkpoint curves and training cost](CHECKPOINT_COST.md)。该只读入口支持
+CylinderFlow、Airfoil 和 scaling 的既有运行记录。
+
 **NAS 运行：**[启动入口与共享目录设置](NAS.md)。
 
 **本分支：H1/H2/Full × seed 0/1/2，共9个四卡任务。** 每任务250,000窗口、62,500更新，
