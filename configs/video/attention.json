@@ -1,0 +1,25 @@
+{
+  "dataset": "cylinderflow",
+  "task": "attention",
+  "selection_file": "../../reports/cylinderflow/selection.json",
+  "methods": [
+    {
+      "name": "H1",
+      "sampling": "single",
+      "training_seed": 0,
+      "template": "/shared/video/attention/h1_seed0/selected/trajectory_{trajectory}_seed0.npz"
+    },
+    {
+      "name": "H2",
+      "sampling": "single",
+      "training_seed": 0,
+      "template": "/shared/video/attention/h2_seed0/selected/trajectory_{trajectory}_seed0.npz"
+    },
+    {
+      "name": "Full",
+      "sampling": "single",
+      "training_seed": 0,
+      "template": "/shared/video/attention/full_seed0/selected/trajectory_{trajectory}_seed0.npz"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "dataset": "cylinderflow",
+  "task": "comparison",
+  "methods": [
+    {
+      "name": "GLaDiT",
+      "sampling": "mean_k8",
+      "group": "group0",
+      "mean_template": "/shared/video/cylinderflow/gladit/group0/fields/{trajectory}/mean_k8.npz"
+    },
+    {
+      "name": "MGN",
+      "sampling": "single",
+      "template": "/shared/video/cylinderflow/mgn/trajectory_{trajectory}_seed_0.npz"
+    },
+    {
+      "name": "EAGLE",
+      "sampling": "single",
+      "template": "/shared/video/cylinderflow/eagle/trajectory_{trajectory}_seed_0.npz"
+    },
+    {
+      "name": "AROMA",
+      "sampling": "single",
+      "template": "/shared/video/cylinderflow/aroma/trajectory_{trajectory}_seed_0.npz"
+    },
+    {
+      "name": "Text2PDE",
+      "sampling": "single",
+      "template": "/shared/video/cylinderflow/text2pde/trajectory_{trajectory}_seed_0.npz"
+    }
+  ]
+}

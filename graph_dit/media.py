@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 import imageio.v2 as imageio
 import matplotlib
@@ -15,7 +16,12 @@ import matplotlib.tri as mtri
 import numpy as np
 
 from .metrics import node_area_weights, triangle_vorticity_divergence
-from .runtime import read_jsonl, write_json
+
+
+def _write_json(destination: Path, record: dict[str, Any]) -> None:
+    destination.write_text(
+        json.dumps(record, indent=2, allow_nan=False) + "\n", encoding="utf-8"
+    )
 
 
 def _channels(field, points, cells, weights):
@@ -26,17 +32,28 @@ def _channels(field, points, cells, weights):
 
 
 def render(
-    inputs,
-    output_dir,
-    labels=None,
-    every=1,
-    fps=12.5,
-    scales_file=None,
-    snapshots=None,
-    snapshot_pdf=False,
-):
-    if every < 1 or fps <= 0:
+    inputs: list[Path],
+    output_dir: Path,
+    labels: list[str] | None = None,
+    every: int = 1,
+    fps: float = 12.5,
+    scales_file: Path | None = None,
+    snapshots: list[int] | None = None,
+    snapshot_pdf: bool = False,
+    *,
+    title: str = "",
+    paired_rows: bool = False,
+    frames: list[int] | None = None,
+) -> dict[str, Any]:
+    """Render common-scale mesh fields and errors, with optional compact columns."""
+    if every < 1 or not np.isfinite(fps) or fps <= 0:
         raise ValueError("every and fps must be positive")
+    if frames is not None and (
+        not frames
+        or len(set(frames)) != len(frames)
+        or any(frame < 0 or frame > 64 for frame in frames)
+    ):
+        raise ValueError("frames must be distinct stored indices in 0..64")
     if snapshots is not None and any(frame < 0 or frame > 64 for frame in snapshots):
         raise ValueError("snapshot frames must be in 0..64")
     started = time.perf_counter()
@@ -77,6 +94,7 @@ def render(
             ]
         )
     names = ["speed", "gauge_free_pressure", "vorticity"]
+    error_names = ["UV vector error", "gauge-free pressure error", "vorticity error"]
     scales = {}
     for row, name in enumerate(names):
         maximum = max(
@@ -88,10 +106,11 @@ def render(
             "vmin": 0 if row == 0 else -maximum,
             "vmax": maximum,
             "error_max": error_max,
+            "error_quantity": error_names[row],
         }
     if scales_file:
         scales = json.loads(Path(scales_file).read_text())["scales"]
-    write_json(
+    _write_json(
         output_dir / "scales.json",
         {
             "scales": scales,
@@ -100,33 +119,64 @@ def render(
         },
     )
     triangles = mtri.Triangulation(points[:, 0], points[:, 1], cells)
-    selected = sorted(set(range(0, 65, every)) | {64})
+    selected = (
+        sorted(frames)
+        if frames is not None
+        else sorted(set(range(0, 65, every)) | {64})
+    )
     snapshot_frames = (
         {0, selected[len(selected) // 2], 64} if snapshots is None else set(snapshots)
     )
     figure, axes = plt.subplots(
-        3, 1 + 2 * len(bundles), figsize=(5 * (1 + 2 * len(bundles)), 8), squeeze=False
+        6 if paired_rows else 3,
+        1 + len(bundles) if paired_rows else 1 + 2 * len(bundles),
+        figsize=(24, 14) if paired_rows else (5 * (1 + 2 * len(bundles)), 8),
+        dpi=100,
+        squeeze=False,
     )
     artists = []
     for row, name in enumerate(names):
-        panels = [(truth[row], "GT", False)]
-        for label, pred, err in zip(labels, predictions, errors):
-            panels.extend(
-                [(pred[row], label, False), (err[row], f"{label}: error", True)]
+        panels = [(row * 2 if paired_rows else row, 0, truth[row], "GT", False)]
+        if paired_rows:
+            axes[row * 2 + 1, 0].set_axis_off()
+            axes[row * 2 + 1, 0].text(
+                0.5,
+                0.5,
+                f"{error_names[row]}\nShared scale across methods",
+                ha="center",
+                va="center",
+                transform=axes[row * 2 + 1, 0].transAxes,
             )
-        for column, (values, label, is_error) in enumerate(panels):
-            ax = axes[row, column]
+        for column, (label, pred, err) in enumerate(
+            zip(labels, predictions, errors), 1
+        ):
+            panels.extend(
+                [
+                    (row * 2, column, pred[row], label, False),
+                    (row * 2 + 1, column, err[row], f"{label}: error", True),
+                ]
+                if paired_rows
+                else [
+                    (row, column * 2 - 1, pred[row], label, False),
+                    (row, column * 2, err[row], f"{label}: error", True),
+                ]
+            )
+        for plot_row, column, values, label, is_error in panels:
+            ax = axes[plot_row, column]
             limits = scales[name]
+            color_values = () if row == 2 else (values[0],)
             artist = ax.tripcolor(
                 triangles,
-                values[0],
+                *color_values,
+                **({"facecolors": values[0]} if row == 2 else {}),
                 shading="flat" if row == 2 else "gouraud",
                 cmap="magma" if is_error else "viridis" if row == 0 else "RdBu_r",
                 vmin=0 if is_error else limits["vmin"],
                 vmax=limits["error_max"] if is_error else limits["vmax"],
             )
             artists.append((artist, values))
-            ax.set_title(f"{label} | {name.replace('_', ' ')}", fontsize=10)
+            quantity = error_names[row] if is_error else name.replace("_", " ")
+            ax.set_title(f"{label} | {quantity}", fontsize=10)
             ax.set_aspect("equal")
             ax.set_xlabel("x")
             ax.set_ylabel("y")
@@ -146,7 +196,8 @@ def render(
                 for artist, values in artists:
                     artist.set_array(values[frame])
                 figure.suptitle(
-                    f"stored frame {frame}/64 | raw index {int(first['raw_frame_indices'][frame])} | "
+                    (f"{title}\n" if title else "")
+                    + f"stored frame {frame}/64 | raw index {int(first['raw_frame_indices'][frame])} | "
                     f"t={float(first['physical_time'][frame]):.4g} s",
                     fontsize=13,
                 )
@@ -165,6 +216,10 @@ def render(
         "snapshot_frames": sorted(snapshot_frames),
         "render_seconds": time.perf_counter() - started,
         "inference_included": False,
+        "title": title,
+        "fps": fps / every,
+        "physical_time": [float(first["physical_time"][frame]) for frame in selected],
+        "reduced_frames": len(selected) != 65,
         "files": ["comparison.gif", "comparison.mp4", "scales.json"]
         + [f"frame_{frame:03d}.png" for frame in sorted(snapshot_frames)]
         + (
@@ -173,11 +228,13 @@ def render(
             else []
         ),
     }
-    write_json(output_dir / "render.json", result)
+    _write_json(output_dir / "render.json", result)
     return result
 
 
 def plot_curves(runs, output_dir):
+    from .runtime import read_jsonl
+
     output_dir.mkdir(parents=True, exist_ok=False)
     figure, axes = plt.subplots(2, 3, figsize=(15, 7))
     for directory in runs:

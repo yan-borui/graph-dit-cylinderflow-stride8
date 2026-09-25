@@ -1,5 +1,7 @@
 # Graph DiT · CylinderFlow · H1
 
+**补充材料视频：**[Airfoil、CylinderFlow 与注意力消融导出](VIDEO.md)。
+
 **NAS 运行：**[启动入口与共享目录设置](NAS.md)。
 
 **全部实验：**[六仓库 NAS 入口总表](NAS_INDEX.md)。
