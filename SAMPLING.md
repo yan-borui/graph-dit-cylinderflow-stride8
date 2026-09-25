@@ -3,6 +3,8 @@
 固定选中的动力学权重、AE、Train 归一化和完整 Validation100，重复运行 R 个独立采样组。
 每组内将 K 次预测解码到物理 UVP，逐节点、逐时刻求均值，再对均值场运行完整评价。
 每个 K 得到 R 个 Validation100 分数，报告分数均值、无偏方差与标准差。
+六项主指标均分别统计：UV relative RMSE、gauge-free pressure RMSE、vorticity RMSE、
+divergence RMSE、energy relative RMSE 和 enstrophy relative RMSE。
 
 任务为首帧预测未来 64 个存储帧，物理时间步为 0.0016。首帧保留观测值，
 未来所有节点 UVP 由模型预测。原网格、面积权重、Airfoil 节点标签和压力 gauge adjustment
@@ -54,7 +56,26 @@ bash scripts/airfoil_sampling_groups.sh \
     --groups 5 --samples 16 --ensemble-sizes 1 2 4 8 16 --plot
 ```
 
-入口读取已完成训练阶段的选优记录，使用其 checkpoint 与 raw/EMA 权重，核验 VGAE 表示及归一化。默认每次生成采用六步 DDIM；`--sampling-steps 20` 在新输出目录使用二十步 DDIM。扩散步数与 ensemble 大小分别记录。
+入口支持显式固定 checkpoint，以及已完成训练阶段的选优记录两种来源。
+对当前 150k EMA0.999 目标，使用已保存的持久 checkpoint，训练可继续推进至 250k：
+
+```bash
+export CHECKPOINT="$RESULT_ROOT/checkpoints/update_000150000.pt"
+export WEIGHTS=ema_0.999
+export EXPECTED_UPDATE=150000
+bash scripts/airfoil_sampling_groups.sh \
+    --groups 5 --samples 16 --ensemble-sizes 1 2 4 8 16 --plot
+```
+
+显式入口核验 checkpoint 内记录的 update，并读取指定 raw/EMA 权重。
+它独立于训练选优记录和阶段结束标志，保持训练运行与选优记录原状。
+Python 入口对应 `--checkpoint ... --weights ema_0.999 --expected-update 150000`；
+`--checkpoint` 与 `--run` 互斥。使用 `--run` 时沿用已完成阶段的选优记录。
+两种来源均经原生加载器核验 checkpoint 与 artifact 绑定、VGAE 表示、Train latent cache、
+数据身份和归一化。采样期间输入文件须保持不变，因此使用持久 update 文件。
+
+默认每次生成采用六步 DDIM；`--sampling-steps 20` 在新输出目录使用二十步 DDIM。
+扩散步数与 ensemble 大小分别记录。
 
 `DATA_DIR` 可指定已有数据，`DEVICE` 默认为 `cuda:0`。保留调度器的 GPU 分配。
 `--samples` 控制每组采样池大小，至少为 2 且覆盖最大 K；`--seed-base` 控制起始采样标签。
@@ -83,6 +104,8 @@ K=1/2/4/8/16 的测速共生成 3,720 个额外预测。
 ## 回传结果
 
 - 根目录 `summary.json`、`score_curve.csv`：各 K 的 R 个分数、均值、无偏方差、标准差。
+- `summary.json` 的 `ensemble[K].metrics` 与 `metric_curve.csv`：六项指标的跨组统计。
+- `group_metrics.csv`：每组、每 K 的六项完整 Validation100 指标。
 - `group_scores.csv`：每组、每 K 的完整 Validation100 分数。
 - `score_curve.pdf/png`：请求绘图时生成，左图为均值及标准差，右图为分数方差。
 - `manifest.json`、`exit.json`：输入文件身份、源码提交、配置、seed 协议和完成状态。

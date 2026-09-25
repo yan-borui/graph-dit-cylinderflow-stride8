@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
-# Evaluate completed Airfoil weights through the existing NAS wrapper.
+# Evaluate fixed Airfoil weights through the existing NAS wrapper.
 set -euo pipefail
 code_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$code_root"
-: "${RESULT_ROOT:?Set RESULT_ROOT to the completed Airfoil training run}"
+if [[ -n "${CHECKPOINT:-}" ]]; then
+    : "${WEIGHTS:?Set WEIGHTS to raw, ema_0.999, or ema_0.9999}"
+    : "${EXPECTED_UPDATE:?Set EXPECTED_UPDATE to the frozen checkpoint update}"
+    checkpoint_args=(--checkpoint "$CHECKPOINT" --weights "$WEIGHTS" --expected-update "$EXPECTED_UPDATE")
+else
+    : "${RESULT_ROOT:?Set RESULT_ROOT to the completed Airfoil training run}"
+    checkpoint_args=(--run "$RESULT_ROOT")
+fi
 : "${OUTPUT_DIR:?Set OUTPUT_DIR to a new sampling result directory}"
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 export MKL_NUM_THREADS=${MKL_NUM_THREADS:-2}
@@ -17,5 +24,5 @@ else
 fi
 : "${ARTIFACTS_DIR:?Set ARTIFACTS_DIR to the prepared Airfoil VGAE representation for this run}"
 exec bash "$code_root/scripts/nas.sh" python "${SAMPLING_ENTRYPOINT:-sampling_ensemble.py}" \
-    --run "$RESULT_ROOT" --artifacts "$ARTIFACTS_DIR" --data-dir "$DATA_DIR" \
+    "${checkpoint_args[@]}" --artifacts "$ARTIFACTS_DIR" --data-dir "$DATA_DIR" \
     --output-dir "$OUTPUT_DIR" --device "${DEVICE:-cuda:0}" "$@"
