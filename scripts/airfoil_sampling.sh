@@ -16,6 +16,6 @@ else
     export DATA_DIR=${DATA_DIR:-${RAW_DATA_DIR}_uvp_stride8}
 fi
 : "${ARTIFACTS_DIR:?Set ARTIFACTS_DIR to the prepared Airfoil VGAE representation for this run}"
-exec bash "$code_root/scripts/nas.sh" python sampling_ensemble.py \
+exec bash "$code_root/scripts/nas.sh" python "${SAMPLING_ENTRYPOINT:-sampling_ensemble.py}" \
     --run "$RESULT_ROOT" --artifacts "$ARTIFACTS_DIR" --data-dir "$DATA_DIR" \
     --output-dir "$OUTPUT_DIR" --device "${DEVICE:-cuda:0}" "$@"
