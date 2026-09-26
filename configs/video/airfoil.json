@@ -2,6 +2,7 @@
   "dataset": "airfoil",
   "task": "comparison",
   "viewport": [-1.0, 3.0, -1.0, 1.0],
+  "vorticity_clip": {"quantile": 0.995},
   "methods": [
     {
       "name": "GLaDiT",

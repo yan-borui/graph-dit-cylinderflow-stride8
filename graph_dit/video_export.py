@@ -477,6 +477,7 @@ def export(config: dict, root: Path, output: Path, args: argparse.Namespace) -> 
         paired_rows=True,
         frames=args.frames,
         viewport=config.get("viewport"),
+        vorticity_clip=config.get("vorticity_clip"),
     )
     write_record(
         output / "status.json",

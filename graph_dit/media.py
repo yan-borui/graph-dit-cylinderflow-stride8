@@ -32,6 +32,34 @@ def _channels(field, points, cells, weights):
     return [np.linalg.norm(field[..., :2], axis=-1), pressure, vorticity]
 
 
+def _area_quantile(values: np.ndarray, areas: np.ndarray, quantile: float) -> float:
+    """Inverse weighted CDF over equally weighted frames and triangle areas."""
+    flat = np.asarray(values, dtype=np.float64).ravel()
+    if not np.isfinite(flat).all():
+        raise ValueError("nonfinite field in color-scale calculation")
+    weights = np.broadcast_to(areas, values.shape).ravel()
+    order = np.argsort(flat)
+    cumulative = np.cumsum(weights[order], dtype=np.float64)
+    index = np.searchsorted(cumulative, quantile * cumulative[-1], side="left")
+    return float(flat[order[min(int(index), len(flat) - 1)]])
+
+
+def _clipping_record(
+    values: np.ndarray, areas: np.ndarray, low: float, high: float
+) -> dict[str, Any]:
+    """Record spatial exceedance in each frame before color saturation."""
+    below = ((values < low) @ areas / areas.sum()).tolist()
+    above = ((values > high) @ areas / areas.sum()).tolist()
+    return {
+        "minimum": float(values.min()),
+        "maximum": float(values.max()),
+        "below_area_fraction_by_frame": below,
+        "above_area_fraction_by_frame": above,
+        "mean_clipped_area_fraction": float(np.mean(below) + np.mean(above)),
+        "max_clipped_area_fraction": float(np.max(np.array(below) + above)),
+    }
+
+
 def render(
     inputs: list[Path],
     output_dir: Path,
@@ -46,10 +74,24 @@ def render(
     paired_rows: bool = False,
     frames: list[int] | None = None,
     viewport: list[float] | None = None,
+    vorticity_clip: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Render common-scale mesh fields and errors, with optional compact columns."""
     if every < 1 or not np.isfinite(fps) or fps <= 0:
         raise ValueError("every and fps must be positive")
+    if vorticity_clip is not None:
+        unknown = set(vorticity_clip) - {"quantile", "limit", "error_limit"}
+        if unknown:
+            raise ValueError(f"unknown vorticity_clip options: {sorted(unknown)}")
+        quantile = vorticity_clip.get("quantile", 0.995)
+        if not np.isfinite(quantile) or not 0 < quantile <= 1:
+            raise ValueError("vorticity_clip.quantile must be in (0, 1]")
+        for key in ("limit", "error_limit"):
+            value = vorticity_clip.get(key)
+            if value is not None and (not np.isfinite(value) or value <= 0):
+                raise ValueError(f"vorticity_clip.{key} must be finite and positive")
+        if scales_file is not None:
+            raise ValueError("choose scales_file or vorticity_clip")
     if frames is not None and (
         not frames
         or len(set(frames)) != len(frames)
@@ -136,6 +178,67 @@ def render(
         }
     if scales_file:
         scales = json.loads(Path(scales_file).read_text())["scales"]
+    clipping = None
+    if vorticity_clip is not None:
+        vertices = np.asarray(points, dtype=np.float64)[cells]
+        edges1 = vertices[:, 1] - vertices[:, 0]
+        edges2 = vertices[:, 2] - vertices[:, 0]
+        areas = (
+            0.5
+            * np.abs(edges1[:, 0] * edges2[:, 1] - edges1[:, 1] * edges2[:, 0])[
+                visible_cells
+            ]
+        )
+        limit = vorticity_clip.get("limit")
+        if limit is None:
+            limit = _area_quantile(np.abs(truth[2][:, visible_cells]), areas, quantile)
+        error_limit = vorticity_clip.get("error_limit")
+        if error_limit is None:
+            error_limit = max(
+                _area_quantile(fields[2][:, visible_cells], areas, quantile)
+                for fields in errors
+            )
+        limit, error_limit = max(limit, 1e-12), max(error_limit, 1e-12)
+        scales["vorticity"].update(
+            vmin=-limit, vmax=limit, error_max=error_limit, normalization="linear"
+        )
+        panel_records = [
+            {
+                "label": "GT",
+                "quantity": "vorticity",
+                **_clipping_record(truth[2][:, visible_cells], areas, -limit, limit),
+            }
+        ]
+        for label, fields, error_fields in zip(labels, predictions, errors):
+            for quantity, values, low, high in (
+                ("vorticity", fields[2], -limit, limit),
+                ("vorticity_error", error_fields[2], 0, error_limit),
+            ):
+                panel_records.append(
+                    {
+                        "label": label,
+                        "quantity": quantity,
+                        **_clipping_record(values[:, visible_cells], areas, low, high),
+                    }
+                )
+        clipping = {
+            "quantile": quantile,
+            "field_rule": (
+                "manual"
+                if vorticity_clip.get("limit") is not None
+                else "GT absolute area quantile"
+            ),
+            "error_rule": (
+                "manual"
+                if vorticity_clip.get("error_limit") is not None
+                else "maximum of per-method area quantiles"
+            ),
+            "weighting": (
+                "full area of each viewport-intersecting triangle; equal frame weights"
+            ),
+            "frames": list(range(target.shape[0])),
+            "panels": panel_records,
+        }
     _write_json(
         output_dir / "scales.json",
         {
@@ -143,6 +246,7 @@ def render(
             "meaning": "fixed across all 65 times and supplied methods; pressure is area-gauge-free",
             "inputs": [str(item) for item in inputs],
             "viewport": viewport,
+            "vorticity_clipping": clipping,
             "spatial_scope": (
                 "triangles intersecting viewport and their nodes"
                 if viewport is not None
@@ -196,6 +300,8 @@ def render(
         for plot_row, column, values, label, is_error in panels:
             ax = axes[plot_row, column]
             limits = scales[name]
+            low = 0 if is_error else limits["vmin"]
+            high = limits["error_max"] if is_error else limits["vmax"]
             color_values = () if row == 2 else (values[0],)
             artist = ax.tripcolor(
                 triangles,
@@ -203,8 +309,8 @@ def render(
                 **({"facecolors": values[0]} if row == 2 else {}),
                 shading="flat" if row == 2 else "gouraud",
                 cmap="magma" if is_error else "viridis" if row == 0 else "RdBu_r",
-                vmin=0 if is_error else limits["vmin"],
-                vmax=limits["error_max"] if is_error else limits["vmax"],
+                vmin=low,
+                vmax=high,
             )
             artists.append((artist, values))
             quantity = error_names[row] if is_error else name.replace("_", " ")
@@ -229,7 +335,9 @@ def render(
                 if over
                 else "neither"
             )
-            figure.colorbar(artist, ax=ax, shrink=0.65, extend=extend)
+            colorbar = figure.colorbar(artist, ax=ax, shrink=0.65, extend=extend)
+            if row == 2 and (under or over):
+                colorbar.set_label("clipped", fontsize=7)
     if viewport is not None:
         overview = (
             axes[1, 0] if paired_rows else axes[0, 0].inset_axes([0.65, 0.65, 0.3, 0.3])
