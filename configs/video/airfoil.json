@@ -1,6 +1,7 @@
 {
   "dataset": "airfoil",
   "task": "comparison",
+  "viewport": [-1.0, 3.0, -1.0, 1.0],
   "methods": [
     {
       "name": "GLaDiT",

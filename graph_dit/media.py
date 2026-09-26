@@ -13,6 +13,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.tri as mtri
+from matplotlib.patches import Rectangle
 import numpy as np
 
 from .metrics import node_area_weights, triangle_vorticity_divergence
@@ -44,6 +45,7 @@ def render(
     title: str = "",
     paired_rows: bool = False,
     frames: list[int] | None = None,
+    viewport: list[float] | None = None,
 ) -> dict[str, Any]:
     """Render common-scale mesh fields and errors, with optional compact columns."""
     if every < 1 or not np.isfinite(fps) or fps <= 0:
@@ -64,6 +66,26 @@ def render(
             bundles.append({key: handle[key] for key in handle.files})
     first = bundles[0]
     points, cells, target = first["points"], first["cells"], first["target"]
+    visible_nodes = np.ones(len(points), dtype=bool)
+    visible_cells = np.ones(len(cells), dtype=bool)
+    if viewport is not None:
+        bounds = np.asarray(viewport, dtype=float)
+        if bounds.shape != (4,) or not np.isfinite(bounds).all():
+            raise ValueError("viewport must contain four finite bounds")
+        xmin, xmax, ymin, ymax = bounds
+        if xmin >= xmax or ymin >= ymax:
+            raise ValueError("viewport bounds must be increasing")
+        vertices = points[cells]
+        visible_cells = (
+            (vertices[..., 0].max(axis=1) >= xmin)
+            & (vertices[..., 0].min(axis=1) <= xmax)
+            & (vertices[..., 1].max(axis=1) >= ymin)
+            & (vertices[..., 1].min(axis=1) <= ymax)
+        )
+        if not visible_cells.any():
+            raise ValueError("viewport does not intersect the mesh")
+        visible_nodes[:] = False
+        visible_nodes[np.unique(cells[visible_cells])] = True
     for bundle in bundles:
         for key in ("points", "cells", "target", "physical_time", "raw_frame_indices"):
             if not np.array_equal(bundle[key], first[key]):
@@ -97,11 +119,15 @@ def render(
     error_names = ["UV vector error", "gauge-free pressure error", "vorticity error"]
     scales = {}
     for row, name in enumerate(names):
+        visible = visible_cells if row == 2 else visible_nodes
         maximum = max(
-            float(np.max(np.abs(fields[row]))) for fields in [truth] + predictions
+            float(np.max(np.abs(fields[row][:, visible])))
+            for fields in [truth] + predictions
         )
         maximum = max(maximum, 1e-12)
-        error_max = max(max(float(np.max(fields[row])) for fields in errors), 1e-12)
+        error_max = max(
+            max(float(np.max(fields[row][:, visible])) for fields in errors), 1e-12
+        )
         scales[name] = {
             "vmin": 0 if row == 0 else -maximum,
             "vmax": maximum,
@@ -116,6 +142,12 @@ def render(
             "scales": scales,
             "meaning": "fixed across all 65 times and supplied methods; pressure is area-gauge-free",
             "inputs": [str(item) for item in inputs],
+            "viewport": viewport,
+            "spatial_scope": (
+                "triangles intersecting viewport and their nodes"
+                if viewport is not None
+                else "full domain"
+            ),
         },
     )
     triangles = mtri.Triangulation(points[:, 0], points[:, 1], cells)
@@ -178,9 +210,47 @@ def render(
             quantity = error_names[row] if is_error else name.replace("_", " ")
             ax.set_title(f"{label} | {quantity}", fontsize=10)
             ax.set_aspect("equal")
+            if viewport is not None:
+                ax.set_xlim(xmin, xmax)
+                ax.set_ylim(ymin, ymax)
             ax.set_xlabel("x")
             ax.set_ylabel("y")
-            figure.colorbar(artist, ax=ax, shrink=0.65)
+            low = 0 if is_error else limits["vmin"]
+            high = limits["error_max"] if is_error else limits["vmax"]
+            visible = visible_cells if row == 2 else visible_nodes
+            under = bool(np.any(values[:, visible] < low))
+            over = bool(np.any(values[:, visible] > high))
+            extend = (
+                "both"
+                if under and over
+                else "min"
+                if under
+                else "max"
+                if over
+                else "neither"
+            )
+            figure.colorbar(artist, ax=ax, shrink=0.65, extend=extend)
+    if viewport is not None:
+        overview = (
+            axes[1, 0] if paired_rows else axes[0, 0].inset_axes([0.65, 0.65, 0.3, 0.3])
+        )
+        overview.clear()
+        overview.set_axis_on()
+        overview.set_aspect("equal")
+        overview.triplot(triangles, color="0.65", linewidth=0.1)
+        overview.add_patch(
+            Rectangle(
+                (xmin, ymin),
+                xmax - xmin,
+                ymax - ymin,
+                fill=False,
+                edgecolor="red",
+                linewidth=1.2,
+            )
+        )
+        overview.set_title("Full domain | red box: displayed region", fontsize=9)
+        overview.set_xlabel("x")
+        overview.set_ylabel("y")
     figure.tight_layout(rect=(0, 0, 1, 0.96))
     with imageio.get_writer(
         output_dir / "comparison.gif", mode="I", duration=1000 * every / fps, loop=0
@@ -191,6 +261,8 @@ def render(
             codec="libx264",
             macro_block_size=2,
             quality=8,
+            pixelformat="yuv420p",
+            output_params=["-profile:v", "high", "-movflags", "+faststart"],
         ) as video:
             for frame in sorted(set(selected) | snapshot_frames):
                 for artist, values in artists:
@@ -217,6 +289,7 @@ def render(
         "render_seconds": time.perf_counter() - started,
         "inference_included": False,
         "title": title,
+        "viewport": viewport,
         "fps": fps / every,
         "physical_time": [float(first["physical_time"][frame]) for frame in selected],
         "reduced_frames": len(selected) != 65,

@@ -464,12 +464,7 @@ def export(config: dict, root: Path, output: Path, args: argparse.Namespace) -> 
     # Import rendering after selection to preserve actionable missing-input records.
     from .media import render
 
-    case_label = (
-        "GLaDiT best Validation case"
-        if selection["selection_mode"] == "best"
-        else "Explicit Validation case"
-    )
-    title = f"{config['dataset']} | {case_label} {index} | selection: GLaDiT K8"
+    title = f"{config['dataset']} | Validation trajectory {index}"
     if config["task"] == "attention":
         title += " | attention ablation"
     result = render(
@@ -477,10 +472,11 @@ def export(config: dict, root: Path, output: Path, args: argparse.Namespace) -> 
         output / "media",
         labels=labels,
         fps=args.fps,
-        snapshots=[],
+        snapshots=[0, 32, 64],
         title=title,
         paired_rows=True,
         frames=args.frames,
+        viewport=config.get("viewport"),
     )
     write_record(
         output / "status.json",
