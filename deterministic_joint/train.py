@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable, Sequence
 import json
 import math
 from pathlib import Path
@@ -14,6 +15,7 @@ import torch
 from torch.nn import functional as F
 from torch.nn.parallel import DistributedDataParallel
 
+from dgn4cfd.graph import Graph
 from graph_dit.config import learning_rate
 from graph_dit.distributed import Context, capture_rng, restore_rng
 from graph_dit.runtime import (
@@ -36,6 +38,13 @@ from .model import JointGNN
 
 CHECKPOINT_FORMAT = "deterministic_joint.training.v1"
 WORLD_SIZE = 4
+LossFunction = Callable[
+    [DistributedDataParallel, torch.Tensor, torch.Tensor, Graph, torch.Tensor],
+    torch.Tensor,
+]
+ScoreCases = Callable[
+    [torch.nn.Module, EvaluationData, tuple[int, ...], torch.device], list[dict]
+]
 
 
 def recipe(dataset: str, verification_updates: int | None) -> dict:
@@ -76,12 +85,15 @@ def recipe(dataset: str, verification_updates: int | None) -> dict:
     }
 
 
-def snapshot_sources(run: Path, resume: bool) -> None:
+def snapshot_sources(
+    run: Path, resume: bool, extra_sources: Sequence[Path] = ()
+) -> None:
     freeze_source(run, resume)
     files = [
         *ROOT.glob("deterministic_joint/*.py"),
         *ROOT.glob("airfoil_data/*.py"),
         ROOT / "scripts/deterministic_4gpu.sh",
+        *extra_sources,
     ]
     for source in files:
         destination = run / "source" / source.relative_to(ROOT)
@@ -129,7 +141,7 @@ def select(run: Path, run_id: str, update: int, weight_names: tuple[str, ...]) -
 
 def validate(
     ctx: Context,
-    model: JointGNN,
+    model: torch.nn.Module,
     ema: EMA,
     data: EvaluationData,
     indices: tuple[int, ...],
@@ -137,6 +149,8 @@ def validate(
     run_id: str,
     update: int,
     relative: str,
+    score_cases: ScoreCases = validation_rows,
+    evaluation_settings: dict | None = None,
 ) -> None:
     destination = run / "validation" / f"update_{update:09d}.json"
     if ctx.broadcast(destination.exists() if ctx.primary else None):
@@ -150,7 +164,7 @@ def validate(
             if weights != "raw":
                 model.load_state_dict(ema.states[weights])
             parts = ctx.all_call(
-                lambda: validation_rows(
+                lambda: score_cases(
                     model, data, indices[ctx.rank :: ctx.world], ctx.device
                 )
             )
@@ -177,6 +191,7 @@ def validate(
                     "weights": weights,
                     "update": update,
                     "checkpoint": relative,
+                    **(evaluation_settings or {}),
                 }
             )
             predictions[weights] = rows
@@ -198,8 +213,34 @@ def validate(
     )
 
 
-def train(args: argparse.Namespace) -> None:
-    config = recipe(args.dataset, args.verification_updates)
+def regression_loss(
+    ddp: DistributedDataParallel,
+    z0: torch.Tensor,
+    context: torch.Tensor,
+    graph: Graph,
+    target: torch.Tensor,
+) -> torch.Tensor:
+    """Regress all normalized future latents of this trajectory in one call."""
+    future = ddp(z0, context, graph)
+    if future.shape != target.shape:
+        raise ValueError(
+            f"predicted {tuple(future.shape)} vs target {tuple(target.shape)}"
+        )
+    return F.mse_loss(future, target)
+
+
+def train(
+    args: argparse.Namespace,
+    *,
+    config: dict | None = None,
+    build_model: Callable[[], torch.nn.Module] = JointGNN,
+    loss_function: LossFunction = regression_loss,
+    score_cases: ScoreCases = validation_rows,
+    extra_sources: Sequence[Path] = (),
+) -> None:
+    """Train one trajectory per DDP rank, with a protocol-specific model and objective."""
+    if config is None:
+        config = recipe(args.dataset, args.verification_updates)
     run = args.result_root
     ctx = Context(WORLD_SIZE, "cuda")
     lock = None
@@ -227,7 +268,7 @@ def train(args: argparse.Namespace) -> None:
             elif not (run / "recovery_latest.pt").is_file():
                 raise FileNotFoundError(f"no recovery checkpoint in {run}")
             lock = acquire_run_lock(run)
-            snapshot_sources(run, args.resume)
+            snapshot_sources(run, args.resume, extra_sources)
             if args.resume:
                 if config != json.loads(
                     (run / "config.json").read_text(encoding="utf-8")
@@ -243,7 +284,7 @@ def train(args: argparse.Namespace) -> None:
 
         attempt = Path(ctx.primary_call(initialize))
         seed_everything(config["seed"])
-        model = JointGNN().to(ctx.device)
+        model = build_model().to(ctx.device)
         ddp = DistributedDataParallel(
             model, device_ids=[ctx.device.index], broadcast_buffers=False
         )
@@ -256,7 +297,7 @@ def train(args: argparse.Namespace) -> None:
         if args.resume:
             saved = load_checkpoint(run / "recovery_latest.pt")
             if (
-                saved["format"] != CHECKPOINT_FORMAT
+                saved["format"] != config["protocol"]
                 or saved["config"] != config
                 or any(saved[key] != value for key, value in identity.items())
                 or len(saved["rank_rng"]) != ctx.world
@@ -316,7 +357,7 @@ def train(args: argparse.Namespace) -> None:
             def write() -> None:
                 payload = {
                     **metadata,
-                    "format": CHECKPOINT_FORMAT,
+                    "format": config["protocol"],
                     "config": config,
                     "update": update,
                     "windows_seen": update * ctx.world,
@@ -336,7 +377,19 @@ def train(args: argparse.Namespace) -> None:
         def checkpoint_and_select() -> None:
             relative = f"checkpoints/update_{update:09d}.pt"
             checkpoint((run / relative, latest))
-            validate(ctx, model, ema, data, validation, run, run_id, update, relative)
+            validate(
+                ctx,
+                model,
+                ema,
+                data,
+                validation,
+                run,
+                run_id,
+                update,
+                relative,
+                score_cases=score_cases,
+                evaluation_settings=config.get("validation"),
+            )
             best = ctx.primary_call(lambda: select(run, run_id, update, weight_names))
             ctx.primary_call(
                 lambda: write_json(
@@ -377,13 +430,8 @@ def train(args: argparse.Namespace) -> None:
             for group in optimizer.param_groups:
                 group["lr"] = lr
             optimizer.zero_grad(set_to_none=True)
-            future = ddp(z0, context, graph)
-            if future.shape != target.shape:
-                raise ValueError(
-                    f"predicted {tuple(future.shape)} vs target {tuple(target.shape)}"
-                )
             # One equally weighted trajectory per rank. DDP averages these gradients over ranks.
-            loss = F.mse_loss(future, target)
+            loss = loss_function(ddp, z0, context, graph, target)
             mean_loss = float(ctx.mean(loss))
             if not math.isfinite(mean_loss):
                 raise FloatingPointError("nonfinite trajectory loss")
@@ -451,8 +499,8 @@ def train(args: argparse.Namespace) -> None:
         ctx.close()
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+def parse_args(description: str) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--dataset", required=True, choices=["airfoil", "cylinderflow"])
     for name in ("data-dir", "cache-dir", "result-root"):
         parser.add_argument(f"--{name}", type=Path, required=True)
@@ -462,7 +510,11 @@ def main() -> None:
         type=int,
         help="shorten workload for a separately named four-GPU verification run",
     )
-    train(parser.parse_args())
+    return parser.parse_args()
+
+
+def main() -> None:
+    train(parse_args(__doc__))
 
 
 if __name__ == "__main__":

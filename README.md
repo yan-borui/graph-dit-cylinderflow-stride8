@@ -1,4 +1,19 @@
-# 确定性 GNN U-Net 的四卡联合轨迹预测
+# 图潜空间扩散的四卡联合轨迹预测
+
+本分支实现 Airfoil 和 CylinderFlow 的无注意力生成对照。冻结 GLaDiT 使用的图 VGAE，以首帧和网格为条件，用多尺度 GNN U-Net 在潜空间联合去噪未来 64 帧。去噪器保留论文的噪声目标、扩散日程和物理场平均规则。训练按数据集各用四卡；两项实验有独立运行目录。
+
+```bash
+# 在各自分配的四卡环境运行；用实际路径替换示例目录。
+PAPER_ARTIFACTS=/shared/paper/cylinderflow/artifacts \
+  bash scripts/graph_latent_diffusion_4gpu.sh cylinderflow train
+PAPER_ARTIFACTS=/shared/paper/airfoil/artifacts PAPER_REPRESENTATION_ID="$AIRFOIL_PAPER_REP_ID" \
+  PAPER_ARTIFACT_ID="$AIRFOIL_PAPER_ARTIFACT_ID" \
+  bash scripts/graph_latent_diffusion_4gpu.sh airfoil train
+```
+
+表示资产、缓存复用、恢复、Test 和测速见[图潜空间扩散训练说明](GRAPH_DIFFUSION.md)。
+
+## 确定性 GNN U-Net 对照
 
 冻结各数据集论文使用的 VGAE，从首帧与静态网格一次回归后续 64 帧的绝对 latent。模型沿用三级多尺度 GNN U-Net（宽 128，各层消息传递深度 1、2、2），每个粗节点输出 64 × 4 个值，再由原解码器预测物理 UVP。该对照同时改变了动力学骨干和训练目标。
 

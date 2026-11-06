@@ -15,4 +15,4 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["graph_dit*", "dgn4cfd*", "airfoil_data*", "deterministic_joint*"]
+include = ["graph_dit*", "dgn4cfd*", "airfoil_data*", "deterministic_joint*", "graph_latent_diffusion*"]
