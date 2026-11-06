@@ -52,11 +52,11 @@ def write_status(directory: Path, **values) -> None:
     temporary.replace(directory / "preparation_status.json")
 
 
-def download_file(directory: Path, name: str) -> None:
+def download_file(directory: Path, name: str, *, source_url: str = SOURCE) -> None:
     destination = directory / name
     if destination.is_file() and destination.stat().st_size:
         return
-    url = f"{SOURCE}/{name}"
+    url = f"{source_url}/{name}"
     temporary = directory / (name + ".download")
     for attempt in range(3):
         try:

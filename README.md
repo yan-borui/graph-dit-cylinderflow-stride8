@@ -1,4 +1,21 @@
-# GLaDiT DiT · Airfoil UVP
+# 确定性 GNN U-Net 的四卡联合轨迹预测
+
+冻结各数据集论文使用的 VGAE，从首帧与静态网格一次回归后续 64 帧的绝对 latent。模型沿用三级多尺度 GNN U-Net（宽 128，各层消息传递深度 1、2、2），每个粗节点输出 64 × 4 个值，再由原解码器预测物理 UVP。该对照同时改变了动力学骨干和训练目标。
+
+在具备四张 NVIDIA GPU、NCCL 和原项目依赖的 Linux 环境中，从仓库根目录运行：
+
+```bash
+# 两个目录分别来自对应数据集原论文模型的 representation artifacts。
+PAPER_ARTIFACTS=/shared/paper/cylinderflow/artifacts \
+  bash scripts/deterministic_4gpu.sh cylinderflow train
+PAPER_ARTIFACTS=/shared/paper/airfoil/artifacts PAPER_REPRESENTATION_ID="$AIRFOIL_PAPER_REP_ID" \
+  PAPER_ARTIFACT_ID="$AIRFOIL_PAPER_ARTIFACT_ID" \
+  bash scripts/deterministic_4gpu.sh airfoil train
+```
+
+先将示例路径换成实际资产位置。Airfoil 的两个 ID 分别取自投稿模型选中 checkpoint 的 `representation_id`、`artifact_id`（或其独立评价记录）。仓库不分发这些权重。两个任务分别使用分配的四张卡，结果与缓存按数据集隔离。准备、恢复、Test、测速及数据契约见 [确定性模型使用说明](DETERMINISTIC.md)。
+
+## 原 Airfoil DiT 入口
 
 **NAS 运行：**[启动入口与共享目录设置](NAS.md)。
 

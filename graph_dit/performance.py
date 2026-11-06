@@ -207,6 +207,7 @@ def benchmark(
     models: Iterable[torch.nn.Module],
     model_load_seconds: float,
     formal: bool = True,
+    physical_dt: float = 0.0016,
 ) -> dict[str, Any]:
     """Benchmark one already-selected checkpoint; produce no quality ranking."""
     output_dir.mkdir(parents=True, exist_ok=False)
@@ -225,7 +226,7 @@ def benchmark(
         "measured_repeats_per_trajectory": MEASURED_REPEATS,
         "microbatch": 1,
         "future_frames": FUTURE_FRAMES,
-        "physical_dt": 0.0016,
+        "physical_dt": physical_dt,
         "sampling_labels": list(range(MEASURED_REPEATS)),
         "seed_rule": "((draw+1)*1000003 + trajectory_index*9176) mod (2**31-1)",
         "input": "CPU physical initial UVP and static geometry; disk-backed static caches resident in CPU memory",

@@ -1,5 +1,10 @@
 # Source and attribution
 
+The deterministic joint model reuses DGN4CFD's Apache-2.0 `MultiScaleGnn`
+graph U-Net (downsampling, bottleneck, upsampling, and skip connections) and
+mesh message-passing operators. The latent-to-trajectory head, four-device
+training, data adapter, and evaluation use the same license as this repository.
+
 The `dgn4cfd/` subset derives from [DGN4CFD](https://github.com/tum-pbs/dgn4cfd), by Mario Lino, Tobias Pfaff and Nils Thuerey, distributed under Apache-2.0. The original license is retained in `LICENSE`. The VGAE, graph hierarchy, mesh operations and frozen codec retain their numerical implementation; package entry points expose only the dependencies needed here. The maintained joint Graph DiT/H1 implementation was copied from the current research source snapshot on 2026-09-05. The base Git commit alone did not contain all maintained changes; this repository's release commit identifies the complete published implementation.
 
 `graph_dit/metrics.py`, `predictions.py` and `performance.py` are copied unchanged from the common CylinderFlow implementation published at [MGN commit 7ef6fff](https://github.com/yan-borui/meshgraphnets-cylinderflow-stride8/tree/7ef6fff8068424e195438fafe84ff7bc170b305a). Data readers, shared media, runtime and offline scoring utilities derive from the same released adapter. Its numerical baseline model is not included. The four baseline source revisions are recorded in `cylinderflow_upstream.json`.
