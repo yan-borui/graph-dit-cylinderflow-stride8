@@ -1,4 +1,4 @@
-"""Four-GPU trajectory-weighted training and Validation24 model selection."""
+"""Four-GPU direct graph Transformer regression and Validation24 model selection."""
 
 from __future__ import annotations
 
@@ -30,11 +30,10 @@ from graph_dit.runtime import (
 )
 from graph_dit.train import EMA, configure_runtime, cpu_state, freeze_source
 from .data import EvaluationData, TrainCache
-from .evaluation import validation_rows
-from .model import JointGNN
+from .evaluation import CHECKPOINT_FORMAT, METHOD, validation_rows
+from .model import JointGraphTransformer
 
 
-CHECKPOINT_FORMAT = "deterministic_joint.training.v1"
 WORLD_SIZE = 4
 
 
@@ -46,13 +45,11 @@ def recipe(dataset: str, verification_updates: int | None) -> dict:
         "dataset": dataset,
         "protocol": CHECKPOINT_FORMAT,
         "seed": 0,
-        "model": {
-            "width": 128,
-            "depths": [1, 2, 2],
-            "latent_channels": 4,
-            "future_frames": 64,
-            "condition_channels": 512,
-        },
+        "method": METHOD,
+        "model": JointGraphTransformer.architecture(),
+        "objective": "standardized_absolute_future_latent_mse",
+        "future_input": "zero_queries",
+        "modulation": "fixed_anchor_embedding",
         "world_size": WORLD_SIZE,
         "microbatch": 1,
         "accumulation": 1,
@@ -129,7 +126,7 @@ def select(run: Path, run_id: str, update: int, weight_names: tuple[str, ...]) -
 
 def validate(
     ctx: Context,
-    model: JointGNN,
+    model: JointGraphTransformer,
     ema: EMA,
     data: EvaluationData,
     indices: tuple[int, ...],
@@ -243,7 +240,7 @@ def train(args: argparse.Namespace) -> None:
 
         attempt = Path(ctx.primary_call(initialize))
         seed_everything(config["seed"])
-        model = JointGNN().to(ctx.device)
+        model = JointGraphTransformer().to(ctx.device)
         ddp = DistributedDataParallel(
             model, device_ids=[ctx.device.index], broadcast_buffers=False
         )
@@ -257,6 +254,7 @@ def train(args: argparse.Namespace) -> None:
             saved = load_checkpoint(run / "recovery_latest.pt")
             if (
                 saved["format"] != CHECKPOINT_FORMAT
+                or saved.get("method") != METHOD
                 or saved["config"] != config
                 or any(saved[key] != value for key, value in identity.items())
                 or len(saved["rank_rng"]) != ctx.world
@@ -280,6 +278,7 @@ def train(args: argparse.Namespace) -> None:
         started = time.monotonic()
         metadata = {
             **identity,
+            "method": METHOD,
             "dataset": args.dataset,
             "run_id": run_id,
             "world_size": ctx.world,
@@ -372,12 +371,12 @@ def train(args: argparse.Namespace) -> None:
                 ).tolist()
                 permutation_epoch = epoch
             index = train_indices[order[offset]]
-            z0, context, graph, target = cache.window(index, ctx.device)
+            z0, context, positions, hops, target = cache.window(index, ctx.device)
             lr = learning_rate(config, update + 1)
             for group in optimizer.param_groups:
                 group["lr"] = lr
             optimizer.zero_grad(set_to_none=True)
-            future = ddp(z0, context, graph)
+            future = ddp(z0, context, positions, hops)
             if future.shape != target.shape:
                 raise ValueError(
                     f"predicted {tuple(future.shape)} vs target {tuple(target.shape)}"

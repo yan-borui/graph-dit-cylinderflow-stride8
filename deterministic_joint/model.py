@@ -1,66 +1,71 @@
-"""Joint deterministic prediction on the unchanged VGAE latent mesh."""
+"""Direct joint regression using the paper's graph-local trajectory Transformer."""
 
 from __future__ import annotations
 
-from copy import copy
-
 import torch
-from torch import nn
-from torch_geometric.utils import coalesce
 
-from dgn4cfd.graph import Graph
-from dgn4cfd.nn.models.multi_scale_gnn import MultiScaleGnn
-from dgn4cfd.transforms.mesh import MeshCoarsening
-
-
-def build_hierarchy(positions: torch.Tensor, edge_index: torch.Tensor) -> Graph:
-    """Extend a latent mesh by two levels, preserving its finest node order."""
-    # Guillard's implementation expects incoming edges contiguous by receiver.
-    positions = positions.detach().cpu().float()
-    edge_index = coalesce(
-        edge_index.detach().cpu().long(), num_nodes=len(positions), sort_by_row=False
-    )
-    row, col = edge_index
-    graph = Graph(
-        pos=positions, edge_index=edge_index, edge_attr=positions[col] - positions[row]
-    )
-    return MeshCoarsening(
-        num_scales=3, rel_pos_scaling=[None] * 3, scalar_rel_pos=True
-    )(graph)
+from dgn4cfd.nn.diffusion.models.graph_video_dit import (
+    GraphTrajectoryBackbone,
+    sinusoidal_embedding,
+)
 
 
-class JointGNN(nn.Module):
-    """One U-Net evaluation predicts the ordered [time, node, channel] latent block."""
+def _backbone_config() -> dict:
+    """The published GLaDiT H1 architecture on both datasets."""
+    return {
+        "latent_features": 4,
+        "condition_features": 512,
+        "width": 512,
+        "blocks": 24,
+        "heads": 8,
+        "mlp_ratio": 4.0,
+        "future_frames": 64,
+        "attention_mode": "graph_hop_mask",
+        "graph_hop_limit": 1,
+    }
+
+
+class JointGraphTransformer(GraphTrajectoryBackbone):
+    """Use an observed initial slot and 64 zero-valued, time-positioned queries."""
 
     def __init__(self) -> None:
-        super().__init__()
-        self.node_encoder = nn.Linear(4 + 512, 128)
-        self.edge_encoder = nn.Linear(2, 128)
-        self.propagator = MultiScaleGnn(
-            depths=[1, 2, 2],
-            fnns_width=128,
-            fnns_depth=2,
-            emb_features=0,
-            dim=2,
-            scalar_rel_pos=True,
+        super().__init__(**_backbone_config())
+        # Both observed/future slots use the original anchor's sinusoidal basis.
+        # Keep the denoiser's MLP and AdaLN gates; the regressor learns its own
+        # weights with this constant conditioner and no diffusion schedule.
+        self.register_buffer(
+            "anchor_basis",
+            sinusoidal_embedding(torch.zeros(1, 2), self.width),
+            persistent=False,
         )
-        self.trajectory_head = nn.Linear(128, 64 * 4)
+
+    @staticmethod
+    def architecture() -> dict:
+        return {
+            **_backbone_config(),
+            "future_input": "zero_queries",
+            "modulation": "fixed_anchor_embedding",
+            "target": "normalized_absolute_future_latent",
+        }
 
     def forward(
-        self, z0: torch.Tensor, node_context: torch.Tensor, graph: Graph
+        self,
+        z0: torch.Tensor,
+        node_context: torch.Tensor,
+        positions: torch.Tensor,
+        hops: torch.Tensor,
     ) -> torch.Tensor:
-        if z0.shape != (graph.num_nodes, 4) or node_context.shape != (
-            graph.num_nodes,
-            512,
-        ):
-            raise ValueError(
-                "expected one [N,4] initial latent and [N,512] static context"
-            )
-        nodes = self.node_encoder(torch.cat((z0, node_context), dim=-1))
-        edges = self.edge_encoder(graph.edge_attr)
-        # Pooling changes graph.edge_index and graph.batch. Isolate these attribute
-        # assignments from the cached mesh and the original frozen codec context.
-        nodes, _ = self.propagator(copy(graph), nodes, edges)
-        return (
-            self.trajectory_head(nodes).reshape(-1, 64, 4).transpose(0, 1).contiguous()
+        """Predict normalized [64, N, 4] latents in one call for one mesh."""
+        if z0.ndim != 2 or z0.shape[-1] != self.latent_features:
+            raise ValueError("expected an observed [N,4] normalized initial latent")
+        future_queries = z0.new_zeros(
+            (1, self.future_frames, z0.size(0), self.latent_features)
         )
+        return self._predict_slots(
+            z0[None, None],
+            future_queries,
+            self.anchor_basis,
+            node_context[None],
+            positions[None],
+            graph_hops=hops[None],
+        )[0]

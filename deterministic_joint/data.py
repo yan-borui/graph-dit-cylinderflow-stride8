@@ -21,13 +21,13 @@ from dgn4cfd.cylinderflow_data import (
     triangle_cells_to_edge_index,
 )
 from dgn4cfd.graph import Graph
+from dgn4cfd.graph_distance import unweighted_shortest_path_hops
 from dgn4cfd.nn.diffusion.graph_window_codec import (
     FrozenUVPLatentCodec,
     LatentGraphContext,
 )
 from dgn4cfd.transforms import AddDirichletMask, MeshCoarsening, ScaleEdgeAttr
 
-from .model import build_hierarchy
 from .source import DT, RAW, REVISION, PrefixData
 
 FORMAT = "deterministic_joint.train65.v1"
@@ -292,6 +292,13 @@ def prepare(
                         ("edge_index", context.edge_index.cpu().numpy()),
                     ):
                         group.create_dataset(name, data=array)
+                    group.create_dataset(
+                        "graph_hops",
+                        data=unweighted_shortest_path_hops(
+                            context.edge_index, num_nodes=context.num_latent_nodes
+                        ),
+                        compression="lzf",
+                    )
                     if (index + 1) % 25 == 0:
                         print(
                             f"cached {index + 1}/{len(data.indices)} Train trajectories",
@@ -323,7 +330,7 @@ class TrainCache:
         self.mean, self.std = [
             torch.from_numpy(a) for a in _latent_stats(self.identity)
         ]
-        self.graphs: dict[int, Graph] = {}
+        self.topology: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
         with h5py.File(self.directory / "train.h5", "r") as cache:
             self.indices = tuple(map(int, cache["train_indices"][:]))
             if (
@@ -344,14 +351,27 @@ class TrainCache:
             if values.ndim != 3 or values.shape[0] != 65 or values.shape[2] != 4:
                 raise ValueError(f"invalid cached Train latent shape: {index}")
             nodes = torch.from_numpy(group["node_context"][:])
-            if index not in self.graphs:
-                self.graphs[index] = build_hierarchy(
-                    torch.from_numpy(group["positions"][:]),
-                    torch.from_numpy(group["edge_index"][:]),
+            if index not in self.topology:
+                positions = torch.from_numpy(group["positions"][:])
+                # Earlier Train65 caches store the same frozen nodes and edges
+                # but omit hop distances. Reconstruct them without changing the cache.
+                hops = (
+                    group["graph_hops"][:]
+                    if "graph_hops" in group
+                    else unweighted_shortest_path_hops(
+                        group["edge_index"][:], num_nodes=len(positions)
+                    )
                 )
-            graph = self.graphs[index].clone().to(device)
+                self.topology[index] = positions, torch.from_numpy(hops)
+            positions, hops = self.topology[index]
         latents = ((values - self.mean) / self.std).to(device)
-        return latents[0], nodes.to(device), graph, latents[1:]
+        return (
+            latents[0],
+            nodes.to(device),
+            positions.to(device),
+            hops.to(device),
+            latents[1:],
+        )
 
 
 class EvaluationData:
@@ -385,19 +405,21 @@ class EvaluationData:
         self.codec = FrozenUVPLatentCodec(
             str(cache_dir / "autoencoder.pt"), device=device
         )
-        self.static: dict[int, tuple[Graph, Graph]] = {}
+        self.static: dict[int, tuple[Graph, torch.Tensor]] = {}
 
     def initial(self, index: int) -> dict:
         sample = self.data.initial(index)
         if index not in self.static:
             graph = _static_graph(sample, self.dataset)
-            coarse = build_hierarchy(graph.pos_3, graph.edge_index_3)
-            self.static[index] = (graph, coarse)
+            hops = unweighted_shortest_path_hops(
+                graph.edge_index_3, num_nodes=len(graph.pos_3)
+            )
+            self.static[index] = graph, torch.from_numpy(hops)
         return dict(
             sample,
             trajectory_index=index,
             static_graph=self.static[index][0],
-            hierarchy=self.static[index][1],
+            graph_hops=self.static[index][1],
         )
 
     @torch.no_grad()
@@ -407,7 +429,8 @@ class EvaluationData:
         return (
             (first - self.mean) / self.std,
             context.node_context,
-            sample["hierarchy"].clone().to(self.device),
+            context.positions,
+            sample["graph_hops"].to(self.device),
             context,
         )
 

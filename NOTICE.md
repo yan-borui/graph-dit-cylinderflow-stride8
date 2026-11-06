@@ -1,9 +1,10 @@
 # Source and attribution
 
-The deterministic joint model reuses DGN4CFD's Apache-2.0 `MultiScaleGnn`
-graph U-Net (downsampling, bottleneck, upsampling, and skip connections) and
-mesh message-passing operators. The latent-to-trajectory head, four-device
+The deterministic regressor reuses GLaDiT's token encoders, graph-local
+attention blocks, AdaLN modulation and output projection. Its four-device
 training, data adapter, and evaluation use the same license as this repository.
+`MultiScaleGnn`, retained from the earlier GNN baseline branch, derives from
+the upstream DGN4CFD implementation under Apache-2.0.
 
 The `dgn4cfd/` subset derives from [DGN4CFD](https://github.com/tum-pbs/dgn4cfd), by Mario Lino, Tobias Pfaff and Nils Thuerey, distributed under Apache-2.0. The original license is retained in `LICENSE`. The VGAE, graph hierarchy, mesh operations and frozen codec retain their numerical implementation; package entry points expose only the dependencies needed here. The maintained joint Graph DiT/H1 implementation was copied from the current research source snapshot on 2026-09-05. The base Git commit alone did not contain all maintained changes; this repository's release commit identifies the complete published implementation.
 

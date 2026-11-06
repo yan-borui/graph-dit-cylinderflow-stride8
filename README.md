@@ -1,6 +1,6 @@
-# 确定性 GNN U-Net 的四卡联合轨迹预测
+# 确定性图 Transformer 的四卡联合轨迹预测
 
-冻结各数据集论文使用的 VGAE，从首帧与静态网格一次回归后续 64 帧的绝对 latent。模型沿用三级多尺度 GNN U-Net（宽 128，各层消息传递深度 1、2、2），每个粗节点输出 64 × 4 个值，再由原解码器预测物理 UVP。该对照同时改变了动力学骨干和训练目标。
+本分支 `feature/deterministic-graph-transformer-4gpu` 实现 GLaDiT 的去扩散消融。模型冻结投稿 VGAE，复用 GLaDiT 的 24 层、宽度 512、8 头、一跳图注意力 Transformer。从首帧和静态网格一次回归未来 64 帧的绝对 latent，再用原解码器还原物理 UVP。扩散版和回归版共享相同的 token 编码、时空位置、注意力块和输出头。
 
 在具备四张 NVIDIA GPU、NCCL 和原项目依赖的 Linux 环境中，从仓库根目录运行：
 

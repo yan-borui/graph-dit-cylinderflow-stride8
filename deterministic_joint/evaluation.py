@@ -1,4 +1,4 @@
-"""Physical evaluation and matched one-GPU timing for a selected joint regressor."""
+"""Physical evaluation and matched timing for the deterministic graph Transformer."""
 
 from __future__ import annotations
 
@@ -17,20 +17,26 @@ from graph_dit.performance import benchmark, configure
 from graph_dit.runtime import load_checkpoint, monitor_indices, write_json
 
 from .data import EvaluationData
-from .model import JointGNN
+from .model import JointGraphTransformer
 from .source import DT
 
 
+METHOD = "deterministic_graph_transformer"
+CHECKPOINT_FORMAT = f"{METHOD}.training.v1"
+
+
 @torch.inference_mode()
-def predict(model: JointGNN, data: EvaluationData, sample: dict) -> np.ndarray:
+def predict(
+    model: JointGraphTransformer, data: EvaluationData, sample: dict
+) -> np.ndarray:
     """Produce the entire forecast from a CPU initial condition and static mesh."""
-    z0, context, graph, decoder = data.encode(sample)
-    latents = model(z0, context, graph)
+    z0, context, positions, hops, decoder = data.encode(sample)
+    latents = model(z0, context, positions, hops)
     return data.decode(latents, sample, decoder)
 
 
 def _forecast_case(
-    model: JointGNN, data: EvaluationData, index: int
+    model: JointGraphTransformer, data: EvaluationData, index: int
 ) -> tuple[dict, np.ndarray | None, dict]:
     sample = data.initial(index)
     if int(sample["trajectory_index"]) != index:
@@ -52,7 +58,10 @@ def _forecast_case(
 
 @torch.inference_mode()
 def validation_rows(
-    model: JointGNN, data: EvaluationData, indices: Iterable[int], device: torch.device
+    model: JointGraphTransformer,
+    data: EvaluationData,
+    indices: Iterable[int],
+    device: torch.device,
 ) -> list[dict]:
     """Return per-trajectory scores for Validation selection on this rank."""
     result = []
@@ -88,7 +97,7 @@ def validation_rows(
 
 def _load_selected(
     run: Path, dataset: str, identity: dict, device: torch.device
-) -> tuple[JointGNN, dict]:
+) -> tuple[JointGraphTransformer, dict]:
     choice = json.loads((run / "selection.json").read_text(encoding="utf-8"))
     name = choice.get("checkpoint")
     if not name:
@@ -98,7 +107,9 @@ def _load_selected(
         raise ValueError("selected checkpoint is outside the requested run")
     state = load_checkpoint(file)
     if (
-        state.get("format") != "deterministic_joint.training.v1"
+        state.get("format") != CHECKPOINT_FORMAT
+        or state.get("method") != METHOD
+        or state.get("config", {}).get("model") != JointGraphTransformer.architecture()
         or state.get("dataset") != dataset
         or state.get("artifact_id") != identity["artifact_id"]
         or state.get("representation_id") != identity["representation_id"]
@@ -106,13 +117,13 @@ def _load_selected(
         or state["update"] != choice["update"]
     ):
         raise ValueError(
-            "selected checkpoint differs from the dataset, cache or update"
+            "selected checkpoint differs from the graph Transformer architecture, dataset, cache or update"
         )
     label = choice["weights"]
     if label != "raw" and label not in state["ema"]:
         raise ValueError("selected weights are missing from the checkpoint")
     parameters = state["model"] if label == "raw" else state["ema"][label]
-    model = JointGNN()
+    model = JointGraphTransformer()
     model.load_state_dict(parameters, strict=True)
     return model.to(device).eval(), {
         "checkpoint": name,
@@ -121,7 +132,11 @@ def _load_selected(
         "training_run": state.get("run_id"),
         "artifact_id": state["artifact_id"],
         "representation_id": state["representation_id"],
-        "model": "deterministic_joint",
+        "model": METHOD,
+        "architecture": state["config"]["model"],
+        "future_input": "zero_queries",
+        "modulation": "fixed_anchor_embedding",
+        "target": "standardized_absolute_future_latents",
         "seed": state["config"]["seed"],
         "model_calls": 1,
         "ensemble_size": 1,
@@ -131,7 +146,7 @@ def _load_selected(
 
 @torch.inference_mode()
 def evaluate(
-    model: JointGNN,
+    model: JointGraphTransformer,
     data: EvaluationData,
     dataset: str,
     split: str,
@@ -214,7 +229,7 @@ def main() -> None:
     )
     if args.mode == "benchmark":
         report = benchmark(
-            method="deterministic_joint",
+            method=METHOD,
             indices=monitor_indices(tuple(data.indices)),
             load_case=data.initial,
             predict=lambda sample: predict(model, data, sample),

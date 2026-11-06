@@ -200,14 +200,8 @@ class JointFinalLayer(nn.Module):
         return self.output(_modulate(self.norm(tokens), shift, scale))
 
 
-class GraphVideoDiT(nn.Module):
-    """Jointly predict DDPM noise for a fixed block of future graph latents.
-
-    Public tensor axes are ``B`` graphs, ``S`` frame slots, ``N`` coarsest graph
-    nodes, and ``C`` latent features. Personal retraining uses ``B=1``, ``S=1+64``
-    and ``C=4``; legacy representations remain configurable. H1/H2 evaluate the
-    exact graph-hop neighborhood, including all frame slots for every neighbor.
-    """
+class GraphTrajectoryBackbone(nn.Module):
+    """Token embeddings, graph/time attention, adaptive normalization and joint head."""
 
     def __init__(
         self,
@@ -219,9 +213,6 @@ class GraphVideoDiT(nn.Module):
         heads: int = 8,
         mlp_ratio: float = 4.0,
         future_frames: int = DEFAULT_FUTURE_FRAMES,
-        diffusion_steps: int = DEFAULT_DIFFUSION_STEPS,
-        beta_start: float = 1e-4,
-        beta_end: float = 2e-2,
         attention_mode: Literal[
             "full", "graph_distance_bias", "graph_hop_mask"
         ] = "full",
@@ -233,10 +224,8 @@ class GraphVideoDiT(nn.Module):
             raise ValueError("latent and condition feature counts must be positive")
         if width < 1 or blocks < 1 or heads < 1 or width % heads:
             raise ValueError("invalid DiT width/block/head configuration")
-        if mlp_ratio <= 0 or future_frames < 1 or diffusion_steps < 2:
-            raise ValueError("invalid MLP, future-frame, or diffusion configuration")
-        if not 0.0 < beta_start < beta_end < 1.0:
-            raise ValueError("beta schedule endpoints must satisfy 0 < start < end < 1")
+        if mlp_ratio <= 0 or future_frames < 1:
+            raise ValueError("invalid MLP or future-frame configuration")
         if attention_mode not in (
             "full",
             "graph_distance_bias",
@@ -264,9 +253,6 @@ class GraphVideoDiT(nn.Module):
         self.heads = int(heads)
         self.mlp_ratio = float(mlp_ratio)
         self.future_frames = int(future_frames)
-        self.diffusion_steps = int(diffusion_steps)
-        self.beta_start = float(beta_start)
-        self.beta_end = float(beta_end)
         self.attention_mode = attention_mode
         self.graph_bias_alpha = float(graph_bias_alpha)
         self.graph_hop_limit = graph_hop_limit
@@ -292,82 +278,10 @@ class GraphVideoDiT(nn.Module):
         )
         self.final = JointFinalLayer(self.width, self.latent_features)
 
-        betas = torch.linspace(
-            self.beta_start, self.beta_end, self.diffusion_steps, dtype=torch.float32
-        )
-        alphas = 1.0 - betas
-        self.register_buffer("alpha_bar", torch.cumprod(alphas, dim=0), persistent=True)
-        self.register_buffer(
-            "latent_mean",
-            torch.zeros(1, 1, 1, self.latent_features),
-            persistent=True,
-        )
-        self.register_buffer(
-            "latent_std",
-            torch.ones(1, 1, 1, self.latent_features),
-            persistent=True,
-        )
-
-    def architecture(self) -> dict[str, int | float | str]:
-        """Return the complete constructor configuration for checkpoints."""
-
-        return {
-            "latent_features": self.latent_features,
-            "condition_features": self.condition_features,
-            "width": self.width,
-            "blocks": self.num_blocks,
-            "heads": self.heads,
-            "mlp_ratio": self.mlp_ratio,
-            "future_frames": self.future_frames,
-            "diffusion_steps": self.diffusion_steps,
-            "beta_start": self.beta_start,
-            "beta_end": self.beta_end,
-            "attention_mode": self.attention_mode,
-            "graph_bias_alpha": self.graph_bias_alpha,
-            "graph_hop_limit": self.graph_hop_limit,
-        }
-
-    def set_latent_statistics(
-        self, mean: torch.Tensor | float, std: torch.Tensor | float
-    ) -> None:
-        """Set absolute-latent statistics computed exclusively from Train."""
-
-        mean_tensor = torch.as_tensor(
-            mean, dtype=self.latent_mean.dtype, device=self.latent_mean.device
-        ).reshape(1, 1, 1, -1)
-        std_tensor = torch.as_tensor(
-            std, dtype=self.latent_std.dtype, device=self.latent_std.device
-        ).reshape(1, 1, 1, -1)
-        if mean_tensor.numel() == 1:
-            mean_tensor = mean_tensor.expand_as(self.latent_mean)
-        if std_tensor.numel() == 1:
-            std_tensor = std_tensor.expand_as(self.latent_std)
-        if mean_tensor.shape != self.latent_mean.shape:
-            raise ValueError("latent mean feature count is incorrect")
-        if std_tensor.shape != self.latent_std.shape or torch.any(std_tensor <= 0):
-            raise ValueError("latent standard deviations must be positive")
-        self.latent_mean.copy_(mean_tensor)
-        self.latent_std.copy_(std_tensor.clamp_min(1e-8))
-
-    def normalise_latent(self, latent: torch.Tensor) -> torch.Tensor:
-        mean = self.latent_mean.reshape(
-            *([1] * (latent.ndim - 1)), self.latent_features
-        )
-        std = self.latent_std.reshape(*([1] * (latent.ndim - 1)), self.latent_features)
-        return (latent - mean) / std
-
-    def denormalise_latent(self, latent: torch.Tensor) -> torch.Tensor:
-        mean = self.latent_mean.reshape(
-            *([1] * (latent.ndim - 1)), self.latent_features
-        )
-        std = self.latent_std.reshape(*([1] * (latent.ndim - 1)), self.latent_features)
-        return latent * std + mean
-
-    def _validate_inputs(
+    def _validate_slots(
         self,
         clean_z0: torch.Tensor,
-        noisy_future: torch.Tensor,
-        diffusion_step: torch.Tensor,
+        future_input: torch.Tensor,
         node_context: torch.Tensor,
         positions: torch.Tensor,
         graph_distance: torch.Tensor | None,
@@ -375,25 +289,17 @@ class GraphVideoDiT(nn.Module):
     ) -> None:
         if clean_z0.ndim != 4 or clean_z0.size(1) != 1:
             raise ValueError("clean_z0 must have shape [B, 1, N, C]")
-        if noisy_future.ndim != 4 or noisy_future.size(1) != self.future_frames:
+        if future_input.ndim != 4 or future_input.size(1) != self.future_frames:
             raise ValueError(
-                f"noisy_future must have shape [B, {self.future_frames}, N, C]"
+                f"future_input must have shape [B, {self.future_frames}, N, C]"
             )
         if clean_z0.shape[0:1] + clean_z0.shape[2:] != (
-            noisy_future.shape[0:1] + noisy_future.shape[2:]
+            future_input.shape[0:1] + future_input.shape[2:]
         ):
             raise ValueError("clean and future latent axes do not agree")
         if clean_z0.size(-1) != self.latent_features:
             raise ValueError("latent feature count differs from the architecture")
-        batch_size, _, num_nodes, _ = noisy_future.shape
-        if diffusion_step.shape != (batch_size,):
-            raise ValueError("diffusion_step must have shape [B]")
-        if diffusion_step.dtype not in (torch.int32, torch.int64):
-            raise TypeError("diffusion_step must be an integer tensor")
-        if torch.any(diffusion_step < 0) or torch.any(
-            diffusion_step >= self.diffusion_steps
-        ):
-            raise ValueError("diffusion_step is outside the training schedule")
+        batch_size, _, num_nodes, _ = future_input.shape
         if node_context.shape != (
             batch_size,
             num_nodes,
@@ -518,20 +424,6 @@ class GraphVideoDiT(nn.Module):
         )
         return 2.0 * (positions - lower) / scale - 1.0
 
-    def _diffusion_conditions(
-        self,
-        diffusion_step: torch.Tensor,
-        *,
-        dtype: torch.dtype,
-    ) -> torch.Tensor:
-        """Only diffusion step 0 and t differ; physical-time positions stay separate."""
-        pair_steps = torch.stack(
-            (torch.zeros_like(diffusion_step), diffusion_step), dim=1
-        )
-        return self.timestep_encoder(sinusoidal_embedding(pair_steps, self.width)).to(
-            dtype
-        )
-
     def _position_features(
         self, positions: torch.Tensor, *, dtype: torch.dtype
     ) -> torch.Tensor:
@@ -548,6 +440,169 @@ class GraphVideoDiT(nn.Module):
         coordinate_time = torch.cat([spatial, offsets], dim=-1)
         return self.position_encoder(coordinate_time).to(dtype)
 
+    def _predict_slots(
+        self,
+        clean_z0: torch.Tensor,
+        future_input: torch.Tensor,
+        condition_basis: torch.Tensor,
+        node_context: torch.Tensor,
+        positions: torch.Tensor,
+        graph_distance: torch.Tensor | None = None,
+        graph_hops: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Apply the shared token encoders and attention blocks, returning future slots."""
+
+        self._validate_slots(
+            clean_z0,
+            future_input,
+            node_context,
+            positions,
+            graph_distance,
+            graph_hops,
+        )
+        slots = torch.cat([clean_z0, future_input], dim=1)
+        batch_size, _, num_nodes, _ = slots.shape
+        tokens = (
+            self.latent_encoder(slots)
+            + self.condition_encoder(node_context)[:, None]
+            + self._position_features(positions, dtype=slots.dtype)
+        )
+        condition = self.timestep_encoder(condition_basis).to(tokens.dtype)
+        neighbor_layout = None
+        attention_bias = None
+        if self.attention_mode == "graph_hop_mask":
+            neighbor_layout = self._neighbor_layout(graph_hops)
+        else:
+            attention_bias = self._attention_bias(
+                graph_distance, graph_hops, dtype=tokens.dtype
+            )
+        for block in self.blocks:
+            tokens = block(tokens, condition, attention_bias, neighbor_layout)
+        predicted = self.final(tokens, condition).reshape(
+            batch_size,
+            self.total_slots,
+            num_nodes,
+            self.latent_features,
+        )
+        return predicted[:, 1:]
+
+
+class GraphVideoDiT(GraphTrajectoryBackbone):
+    """Jointly predict DDPM noise for a fixed block of future graph latents.
+
+    Public tensor axes are ``B`` graphs, ``S`` frame slots, ``N`` coarsest graph
+    nodes, and ``C`` latent features. Personal retraining uses ``B=1``, ``S=1+64``
+    and ``C=4``; legacy representations remain configurable. H1/H2 evaluate the
+    exact graph-hop neighborhood, including all frame slots for every neighbor.
+    """
+
+    def __init__(
+        self,
+        *,
+        latent_features: int = 1,
+        condition_features: int = 126,
+        width: int = 256,
+        blocks: int = 8,
+        heads: int = 8,
+        mlp_ratio: float = 4.0,
+        future_frames: int = DEFAULT_FUTURE_FRAMES,
+        diffusion_steps: int = DEFAULT_DIFFUSION_STEPS,
+        beta_start: float = 1e-4,
+        beta_end: float = 2e-2,
+        attention_mode: Literal[
+            "full", "graph_distance_bias", "graph_hop_mask"
+        ] = "full",
+        graph_bias_alpha: float = 0.0,
+        graph_hop_limit: int | None = None,
+    ) -> None:
+        if diffusion_steps < 2 or not 0.0 < beta_start < beta_end < 1.0:
+            raise ValueError("invalid diffusion schedule")
+        super().__init__(
+            latent_features=latent_features,
+            condition_features=condition_features,
+            width=width,
+            blocks=blocks,
+            heads=heads,
+            mlp_ratio=mlp_ratio,
+            future_frames=future_frames,
+            attention_mode=attention_mode,
+            graph_bias_alpha=graph_bias_alpha,
+            graph_hop_limit=graph_hop_limit,
+        )
+        self.diffusion_steps = int(diffusion_steps)
+        self.beta_start = float(beta_start)
+        self.beta_end = float(beta_end)
+        betas = torch.linspace(
+            self.beta_start, self.beta_end, self.diffusion_steps, dtype=torch.float32
+        )
+        alphas = 1.0 - betas
+        self.register_buffer("alpha_bar", torch.cumprod(alphas, dim=0), persistent=True)
+        self.register_buffer(
+            "latent_mean",
+            torch.zeros(1, 1, 1, self.latent_features),
+            persistent=True,
+        )
+        self.register_buffer(
+            "latent_std",
+            torch.ones(1, 1, 1, self.latent_features),
+            persistent=True,
+        )
+
+    def architecture(self) -> dict[str, int | float | str]:
+        """Return the complete constructor configuration for checkpoints."""
+
+        return {
+            "latent_features": self.latent_features,
+            "condition_features": self.condition_features,
+            "width": self.width,
+            "blocks": self.num_blocks,
+            "heads": self.heads,
+            "mlp_ratio": self.mlp_ratio,
+            "future_frames": self.future_frames,
+            "diffusion_steps": self.diffusion_steps,
+            "beta_start": self.beta_start,
+            "beta_end": self.beta_end,
+            "attention_mode": self.attention_mode,
+            "graph_bias_alpha": self.graph_bias_alpha,
+            "graph_hop_limit": self.graph_hop_limit,
+        }
+
+    def set_latent_statistics(
+        self, mean: torch.Tensor | float, std: torch.Tensor | float
+    ) -> None:
+        """Set absolute-latent statistics computed exclusively from Train."""
+
+        mean_tensor = torch.as_tensor(
+            mean, dtype=self.latent_mean.dtype, device=self.latent_mean.device
+        ).reshape(1, 1, 1, -1)
+        std_tensor = torch.as_tensor(
+            std, dtype=self.latent_std.dtype, device=self.latent_std.device
+        ).reshape(1, 1, 1, -1)
+        if mean_tensor.numel() == 1:
+            mean_tensor = mean_tensor.expand_as(self.latent_mean)
+        if std_tensor.numel() == 1:
+            std_tensor = std_tensor.expand_as(self.latent_std)
+        if mean_tensor.shape != self.latent_mean.shape:
+            raise ValueError("latent mean feature count is incorrect")
+        if std_tensor.shape != self.latent_std.shape or torch.any(std_tensor <= 0):
+            raise ValueError("latent standard deviations must be positive")
+        self.latent_mean.copy_(mean_tensor)
+        self.latent_std.copy_(std_tensor.clamp_min(1e-8))
+
+    def normalise_latent(self, latent: torch.Tensor) -> torch.Tensor:
+        mean = self.latent_mean.reshape(
+            *([1] * (latent.ndim - 1)), self.latent_features
+        )
+        std = self.latent_std.reshape(*([1] * (latent.ndim - 1)), self.latent_features)
+        return (latent - mean) / std
+
+    def denormalise_latent(self, latent: torch.Tensor) -> torch.Tensor:
+        mean = self.latent_mean.reshape(
+            *([1] * (latent.ndim - 1)), self.latent_features
+        )
+        std = self.latent_std.reshape(*([1] * (latent.ndim - 1)), self.latent_features)
+        return latent * std + mean
+
     def forward(
         self,
         clean_z0: torch.Tensor,
@@ -560,42 +615,26 @@ class GraphVideoDiT(nn.Module):
     ) -> torch.Tensor:
         """Predict ``epsilon[B, future_frames, N, C]`` for one joint clip."""
 
-        self._validate_inputs(
+        batch_size = clean_z0.size(0)
+        if diffusion_step.shape != (batch_size,):
+            raise ValueError("diffusion_step must have shape [B]")
+        if diffusion_step.dtype not in (torch.int32, torch.int64):
+            raise TypeError("diffusion_step must be an integer tensor")
+        if torch.any(diffusion_step < 0) or torch.any(
+            diffusion_step >= self.diffusion_steps
+        ):
+            raise ValueError("diffusion_step is outside the training schedule")
+        pair_steps = torch.stack(
+            (torch.zeros_like(diffusion_step), diffusion_step), dim=1
+        )
+        return self._predict_slots(
             clean_z0,
             noisy_future,
-            diffusion_step,
+            sinusoidal_embedding(pair_steps, self.width),
             node_context,
-            positions,
             graph_distance,
             graph_hops,
         )
-        slots = torch.cat([clean_z0, noisy_future], dim=1)
-        batch_size, _, num_nodes, _ = slots.shape
-        tokens = (
-            self.latent_encoder(slots)
-            + self.condition_encoder(node_context)[:, None]
-            + self._position_features(positions, dtype=slots.dtype)
-        )
-        diffusion_condition = self._diffusion_conditions(
-            diffusion_step, dtype=tokens.dtype
-        )
-        neighbor_layout = None
-        attention_bias = None
-        if self.attention_mode == "graph_hop_mask":
-            neighbor_layout = self._neighbor_layout(graph_hops)
-        else:
-            attention_bias = self._attention_bias(
-                graph_distance, graph_hops, dtype=tokens.dtype
-            )
-        for block in self.blocks:
-            tokens = block(tokens, diffusion_condition, attention_bias, neighbor_layout)
-        predicted = self.final(tokens, diffusion_condition).reshape(
-            batch_size,
-            self.total_slots,
-            num_nodes,
-            self.latent_features,
-        )
-        return predicted[:, 1:]
 
     def corrupt_future(
         self,

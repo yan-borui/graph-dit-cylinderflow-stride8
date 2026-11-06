@@ -15,7 +15,7 @@ python=${PYTHON:-python}
 work=${WORK_DIR:-"$repo/runs/deterministic_joint"}
 data=${DATA_DIR:-"$work/$dataset/data"}
 cache=${CACHE_DIR:-"$work/$dataset/train-cache"}
-run=${RESULT_ROOT:-"$work/$dataset/seed0"}
+run=${RESULT_ROOT:-"$work/$dataset/transformer_seed0"}
 if [[ "$dataset" == airfoil ]]; then
   : "${PAPER_REPRESENTATION_ID:?Set the Airfoil representation_id from the selected paper run.}"
   : "${PAPER_ARTIFACT_ID:?Set the Airfoil artifact_id from the same selected paper run.}"
