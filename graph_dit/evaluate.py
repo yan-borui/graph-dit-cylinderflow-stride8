@@ -71,6 +71,19 @@ class Predictor:
         self.static_graphs = {}
         self.static_hops = {}
 
+    def use_test_data(self, directory: Path) -> None:
+        """Keep frozen Train normalization and transforms for Test geometry."""
+        from mgn_data.test_data import TestData
+
+        data = TestData(directory, "cylinderflow")
+        data.bind_training_manifest(self.data.manifest)
+        self.data = data
+        self.graphs = CylinderFlowH5Dataset(
+            data.dataset, manifest_path=data.manifest_file
+        )
+        self.static_graphs.clear()
+        self.static_hops.clear()
+
     def load_case(self, index: int) -> dict:
         initial = self.data.initial(index)
         if index not in self.static_graphs:
@@ -335,9 +348,16 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument(
-        "--scope", choices=("monitor", "validation"), default="validation"
+        "--scope", choices=("monitor", "validation", "test"), default="validation"
     )
+    parser.add_argument("--test-data-dir", type=Path)
+    parser.add_argument("--sampling-steps", type=int, default=20)
+    parser.add_argument("--ensemble-size", type=int, default=1)
     args = parser.parse_args()
+    if (args.scope == "test") != (args.test_data_dir is not None):
+        parser.error("--scope test requires --test-data-dir; other scopes must omit it")
+    if args.ensemble_size < 1:
+        parser.error("ensemble-size must be positive")
     selected = json.loads((args.run / "selection.json").read_text())
     if not selected.get("complete_stage"):
         raise ValueError(
@@ -357,14 +377,23 @@ def main() -> None:
         args.data_dir,
         device,
         checkpoint["config"]["training"]["precision"],
+        sampling_steps=args.sampling_steps,
     )
-    indices = predictor.data.splits["validation"]
+    training_identity = predictor.data.identity()
+    if args.scope == "test":
+        predictor.use_test_data(args.test_data_dir)
+    indices = predictor.data.splits["test" if args.scope == "test" else "validation"]
     if args.scope == "monitor":
         indices = monitor_indices(indices)
+    evaluated_predictor = predictor
+    if args.ensemble_size > 1:
+        from .pareto_run import EnsemblePredictor
+
+        evaluated_predictor = EnsemblePredictor(predictor, args.ensemble_size)
     evaluate_model(
-        predictor,
+        evaluated_predictor,
         indices,
-        [0, 1, 2],
+        [0] if args.ensemble_size > 1 else [0, 1, 2],
         args.output_dir,
         {
             "checkpoint_id": checkpoint["checkpoint_id"],
@@ -374,6 +403,14 @@ def main() -> None:
             "config": checkpoint["config"],
             "artifact_id": checkpoint["artifact_id"],
             "scope": args.scope,
+            "test_accessed": args.scope == "test",
+            "training_data_identity": training_identity,
+            "evaluation_data_identity": predictor.data.identity(),
+            "sampling_steps": args.sampling_steps,
+            "ensemble_size": args.ensemble_size,
+            "aggregation": "physical ensemble mean"
+            if args.ensemble_size > 1
+            else "three independent samples scored separately",
         },
     )
 
