@@ -1,3 +1,5 @@
+**Test 评测：**[官方下载、1+64 转换与完整 Test100 入口](TEST.md)。
+
 # 确定性 GNN U-Net 的四卡联合轨迹预测
 
 冻结各数据集论文使用的 VGAE，从首帧与静态网格一次回归后续 64 帧的绝对 latent。模型沿用三级多尺度 GNN U-Net（宽 128，各层消息传递深度 1、2、2），每个粗节点输出 64 × 4 个值，再由原解码器预测物理 UVP。该对照同时改变了动力学骨干和训练目标。
@@ -39,5 +41,5 @@ bash scripts/airfoil_4gpu.sh train
 已有数据/缓存自动复用，`resume`恢复训练。只处理全量数据时运行
 `bash scripts/airfoil_4gpu.sh data`，无需GPU。DiT另需设置`AUTOENCODER`为已训练的Airfoil VGAE导出。
 
-此分支已做静态检查，目标四卡运行验收尚未执行。Test保持封存。
+此分支已做静态检查，目标四卡运行验收尚未执行。Test 入口见 [TEST.md](TEST.md)。
 原上游源码、许可证和历史CylinderFlow记录保留。
