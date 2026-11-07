@@ -1,3 +1,5 @@
+**Test 评测：**[官方下载、1+64 转换与完整 Test100 入口](TEST.md)。
+
 # 图潜空间扩散的四卡联合轨迹预测
 
 本分支实现 Airfoil 和 CylinderFlow 的无注意力生成对照。冻结 GLaDiT 使用的图 VGAE，以首帧和网格为条件，用多尺度 GNN U-Net 在潜空间联合去噪未来 64 帧。去噪器保留论文的噪声目标、扩散日程和物理场平均规则。训练按数据集各用四卡；两项实验有独立运行目录。
@@ -54,5 +56,5 @@ bash scripts/airfoil_4gpu.sh train
 已有数据/缓存自动复用，`resume`恢复训练。只处理全量数据时运行
 `bash scripts/airfoil_4gpu.sh data`，无需GPU。DiT另需设置`AUTOENCODER`为已训练的Airfoil VGAE导出。
 
-此分支已做静态检查，目标四卡运行验收尚未执行。Test保持封存。
+此分支已做静态检查，目标四卡运行验收尚未执行。Test 入口见 [TEST.md](TEST.md)。
 原上游源码、许可证和历史CylinderFlow记录保留。
