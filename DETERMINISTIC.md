@@ -44,13 +44,32 @@ CylinderFlow 使用自己论文版权重目录，数据集参数改为 `cylinder
 
 ## 评价与成本
 
+### 下载 Test 原始数据
+
+从仓库根目录运行，使用 Python 3.10+ 标准库即可，无需 GPU、TensorFlow 或模型权重：
+
+```bash
+bash scripts/download_test.sh --dataset both --raw-root /shared/data/mgn-test-raw
+```
+
+也可直接运行 `python scripts/download_test.py --dataset both --raw-root /shared/data/mgn-test-raw`。只下载一个数据集时将 `both` 改为 `airfoil` 或 `cylinderflow`。脚本只获取官方 `meta.json` 和 `test.tfrecord`，分别保存到根目录下的 `airfoil/` 与 `cylinder_flow/`，两个 Test 文件合计约 6.41 GB。已有文件复用；中断下载保留 `.download` 文件，重跑同一命令继续传输。目录锁与评测转换入口共用。
+
+原始文件可供各 baseline 共用，各方法仍使用自己的转换器和训练时确定的归一化。该命令仅下载；本分支在首次 Test 评价时自动生成 `TEST_DATA_DIR/test65/` 下的 HDF5 和 manifest，保留 raw 0, 8, …, 512。转换沿用所选 VGAE 绑定的 Train 统计。
+
+### 全量评分与测速
+
 ```bash
 # 沿用以上 WORK_DIR 与数据集身份设置；示例均使用 Airfoil。
 bash scripts/deterministic_4gpu.sh airfoil eval
-SPLIT=test TEST_DATA_DIR=/shared/data/airfoil-test \
+RAW_DIR=/shared/data/mgn-test-raw/airfoil \
+  SPLIT=test TEST_DATA_DIR=/shared/data/airfoil-test OFFLINE=1 \
   bash scripts/deterministic_4gpu.sh airfoil eval
 bash scripts/deterministic_4gpu.sh airfoil benchmark
 ```
+
+CylinderFlow 的 Test 命令使用 `RAW_DIR=/shared/data/mgn-test-raw/cylinder_flow`、`TEST_DATA_DIR=/shared/data/cylinderflow-test`，数据集参数改为 `cylinderflow`，并沿用它自己的 `WORK_DIR`、`CACHE_DIR` 与 `RESULT_ROOT`。Airfoil 继续使用同一投稿导出的两个身份 ID。`OFFLINE=1` 使上述评分只读取已经下载的原始文件；下载阶段与训练阶段分别执行。
+
+Test 使用 Validation 选定的权重，完整评价官方 100 条轨迹。Test 与原 Validation 结果分别保留并标明 split；补测结果不覆盖已报告的 Validation 数值。跨方法比较时对齐 split、帧范围、物理量、采样预算和指标定义。
 
 两项命令都从 `selection.json` 加载 Validation 选定的 checkpoint 和 raw/EMA 类型。评价输出 100 份逐轨迹记录和 `summary.json`，覆盖全窗速度相对误差、去均值压力 RMSE、涡量、散度、动能、enstrophy 和逐帧指标。评分排除首帧，各轨迹等权。有失败时保存全体轨迹及失败数，各指标同时标明有限值数量，该次评价标为不完整并返回非零退出码。
 

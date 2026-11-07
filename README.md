@@ -1,3 +1,5 @@
+**Test 评测：**[官方下载、1+64 转换与完整 Test100 入口](TEST.md)。
+
 # 确定性图 Transformer 的四卡联合轨迹预测
 
 本分支 `feature/deterministic-graph-transformer-4gpu` 实现 GLaDiT 的去扩散消融。模型冻结投稿 VGAE，复用 GLaDiT 的 24 层、宽度 512、8 头、一跳图注意力 Transformer。从首帧和静态网格一次回归未来 64 帧的绝对 latent，再用原解码器还原物理 UVP。扩散版和回归版共享相同的 token 编码、时空位置、注意力块和输出头。
@@ -14,6 +16,8 @@ PAPER_ARTIFACTS=/shared/paper/airfoil/artifacts PAPER_REPRESENTATION_ID="$AIRFOI
 ```
 
 先将示例路径换成实际资产位置。Airfoil 的两个 ID 分别取自投稿模型选中 checkpoint 的 `representation_id`、`artifact_id`（或其独立评价记录）。仓库不分发这些权重。两个任务分别使用分配的四张卡，结果与缓存按数据集隔离。准备、恢复、Test、测速及数据契约见 [确定性模型使用说明](DETERMINISTIC.md)。
+
+独立下载 Airfoil 和 CylinderFlow 的官方 Test：`bash scripts/download_test.sh --dataset both --raw-root /shared/data/mgn-test-raw`。下载只依赖 Python 标准库，支持断点续传；下载目录与 Test 评分命令见 [Test 下载与评价](DETERMINISTIC.md#评价与成本)。
 
 ## 原 Airfoil DiT 入口
 
@@ -39,5 +43,5 @@ bash scripts/airfoil_4gpu.sh train
 已有数据/缓存自动复用，`resume`恢复训练。只处理全量数据时运行
 `bash scripts/airfoil_4gpu.sh data`，无需GPU。DiT另需设置`AUTOENCODER`为已训练的Airfoil VGAE导出。
 
-此分支已做静态检查，目标四卡运行验收尚未执行。Test保持封存。
+此分支已做静态检查，目标四卡运行验收尚未执行。
 原上游源码、许可证和历史CylinderFlow记录保留。
