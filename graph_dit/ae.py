@@ -67,7 +67,7 @@ def loss_components(model, graph, posterior_mean: bool = False) -> tuple:
 class Frames(torch.utils.data.Dataset):
     def __init__(self, graphs, indices: tuple, epoch: int | None = None):
         self.graphs, self.indices, self.epoch = graphs, indices, epoch
-        self.items = [(index, frame) for index in indices for frame in (0, 25, 50, 74)]
+        self.items = [(index, frame) for index in indices for frame in (0, 21, 42, 64)]
 
     def __len__(self):
         return len(self.indices) if self.epoch is not None else len(self.items)
@@ -80,7 +80,7 @@ class Frames(torch.utils.data.Dataset):
             frame = int(
                 np.random.default_rng(
                     np.random.SeedSequence([0, self.epoch, index])
-                ).integers(0, 75)
+                ).integers(0, 65)
             )
         return self.graphs.get_sequence(index, sequence_start=frame, n_in=1)
 
@@ -140,7 +140,7 @@ def train_ae(
                 "lr": 1e-4,
                 "max_epochs": epochs,
                 "kl_weight": 1e-6,
-                "validation_frames": [0, 25, 50, 74],
+                "validation_frames": [0, 21, 42, 64],
                 "scheduler": "ReduceLROnPlateau, Train total, factor=0.1 patience=50, endpoint lr<1e-8",
             },
         )

@@ -6,8 +6,8 @@ from .data import Dataset
 
 def fetch_data(output_dir: Path) -> Dataset:
     return Dataset(
-        output_dir / "airfoil_stride8_75frames.h5",
-        output_dir / "airfoil_stride8_75frames_manifest.json",
+        output_dir / "ellipse_stride15_65frames.h5",
+        output_dir / "ellipse_stride15_65frames_manifest.json",
     )
 
 

@@ -70,13 +70,9 @@ class Predictor:
 
     def use_test_data(self, directory: Path) -> None:
         """Keep the frozen representation and Train transforms for Test geometry."""
-        from mgn_data.test_data import TestData
-
-        dataset_name = (
-            "airfoil" if "airfoil" in self.data.manifest["format"] else "cylinderflow"
-        )
-        data = TestData(directory, dataset_name)
-        data.bind_training_manifest(self.data.manifest)
+        data = Dataset(*paths(directory))
+        if data.identity() != self.data.identity():
+            raise ValueError("Ellipse evaluation must use the original shared dataset")
         self.data = data
         self.graphs = CylinderFlowH5Dataset(
             data.dataset, manifest_path=data.manifest_file
@@ -276,7 +272,7 @@ def evaluate_model(
                 sample["points"],
                 sample["cells"],
                 sample["node_type"],
-                0.0016,
+                0.15,
             )
             metrics.update(
                 boundary_metrics(

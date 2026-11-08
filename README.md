@@ -1,28 +1,26 @@
-**Test 评测：**[官方下载、1+64 转换与完整 Test100 入口](TEST.md)。
+# GLaDiT DiT on MegaFlow2D Ellipse
 
-# GLaDiT DiT · Airfoil UVP
+This branch implements the original high-resolution mesh UVP task: file frames 1,16,…,961, one observation and 64 predictions, Train782 / Validation100 / Test100. All training uses four GPUs and checkpoint selection uses full Validation100.
 
-**NAS 运行：**[启动入口与共享目录设置](NAS.md)。
-
-**多次采样：**[Validation100 均值、方差与成本](SAMPLING.md)。
-
-`feature/airfoil-uvp-4gpu`提供默认四卡的Airfoil训练与恢复入口。
-完整数据契约、环境、固定配方和命令见[Airfoil操作说明](AIRFOIL.md)。
-
-GLaDiT使用已锁定的5090模型配方；本分支只训练一个seed0配置。
-
-设置原始数据目录和四卡训练结果目录后，一条命令自动完成缺文件下载、
-全量stride8转换、Train归一化、模型缓存准备及训练：
+Start with [ELLIPSE.md](ELLIPSE.md) for data preparation, training, recovery, budgets and verification status. Use [TEST.md](TEST.md) for final evaluation. Architecture and optimizer settings are inherited from the Airfoil four-GPU source; [AIRFOIL.md](AIRFOIL.md) is historical reference, and its launch commands do not define this branch’s task.
 
 ```bash
-export RAW_DATA_DIR=/data/datasets/meshgraphnets/airfoil
-export RESULT_ROOT=/shared/runs/airfoil_dit_seed0
-export CUDA_VISIBLE_DEVICES=0,1,2,3  # 使用Slurm时保留调度器分配的值
-bash scripts/airfoil_4gpu.sh train
+export RAW_DATA_DIR=/data/datasets/megaflow2d
+export DATA_DIR=/data/datasets/megaflow2d_ellipse_stride15
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+export RESULT_ROOT=/data/runs/ellipse_gladit_seed0
+bash scripts/ellipse_4gpu.sh train
 ```
 
-已有数据/缓存自动复用，`resume`恢复训练。只处理全量数据时运行
-`bash scripts/airfoil_4gpu.sh data`，无需GPU。DiT另需设置`AUTOENCODER`为已训练的Airfoil VGAE导出。
+## Automatic VGAE → DiT handoff
 
-此分支已做静态检查，目标四卡运行验收尚未执行。Test 入口见 [TEST.md](TEST.md)。
-原上游源码、许可证和历史CylinderFlow记录保留。
+For an existing selected representation, set AUTOENCODER to its `dit_autoencoder.pt`. ARTIFACTS_DIR defaults to `${AUTOENCODER}.ellipse_latents` and is bound to that export and the Train statistics. For automatic representation training followed by DiT, leave AUTOENCODER unset and set:
+
+```bash
+export VGAE_REPO=/code/vgae-cylinderflow-stride8
+export VGAE_RESULT_ROOT=/data/runs/ellipse_vgae_seed0
+export RESULT_ROOT=/data/runs/ellipse_gladit_seed0
+bash scripts/ellipse_4gpu.sh train
+```
+
+Both checkouts must use this Ellipse branch. The wrapper completes or resumes VGAE, uses its selected export, prepares all Train65 latent frames, verifies the representation, then starts DiT. ELLIPSE_CONFIG defaults to `configs/ellipse_h1_w512_d24_4gpu.json`. Final weights come from the completed run's `selection.json`; Test does not select another checkpoint.

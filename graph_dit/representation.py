@@ -25,8 +25,8 @@ from .data import Dataset, DATA_REPOSITORY, DATA_REVISION
 from .config import load_config
 from .runtime import seed_everything, write_json
 
-ARTIFACT_FORMAT = "graph_dit.ae75.train_cache.v1"
-PERSONAL_AE_FORMAT = "vgae_cf.airfoil_uvp_dit_autoencoder.v1"
+ARTIFACT_FORMAT = "graph_dit.ellipse.ae65.train_cache.v1"
+PERSONAL_AE_FORMAT = "vgae_cf.ellipse_uvp_dit_autoencoder.v1"
 AE_ASSET = "vgae_stride8_epoch930.pt"
 AE_REPRESENTATION_ID = "cylinderflow_stride8_vgae_epoch930_release_v1"
 AE_REPOSITORY = "DingDong1921/graph-dit-cylinderflow-stride8"
@@ -45,8 +45,8 @@ AE_SOURCES = {
 
 def paths(data_dir: Path) -> tuple[Path, Path]:
     return (
-        data_dir / "airfoil_stride8_75frames.h5",
-        data_dir / "airfoil_stride8_75frames_manifest.json",
+        data_dir / "ellipse_stride15_65frames.h5",
+        data_dir / "ellipse_stride15_65frames_manifest.json",
     )
 
 
@@ -65,7 +65,7 @@ def open_data(
 
 def fetch_autoencoder(output: Path, *, source: str = "huggingface") -> None:
     raise RuntimeError(
-        "Airfoil requires a new Airfoil VGAE export; no CylinderFlow weights are downloaded"
+        "Ellipse requires a new Ellipse VGAE export; no CylinderFlow weights are downloaded"
     )
 
 
@@ -154,7 +154,7 @@ def prepare(
         "dataset_revision": DATA_REVISION,
         "data_identity": data.identity(),
         "normalization": checkpoint["normalization"],
-        "train_frames": [0, 74],
+        "train_frames": [0, 64],
         "dit_train_frames": [0, 64],
         "debug": debug,
         "train_count": len(data.splits["train"]),
@@ -176,7 +176,7 @@ def prepare(
             mean = torch.tensor(normalization.field_mean)
             std = torch.tensor(normalization.field_std)
             latent_frames = [first.cpu().numpy()]
-            for frame in range(1, 75):
+            for frame in range(1, 65):
                 scaled = (torch.from_numpy(physical[frame]) - mean) / std
                 latent, *_ = codec.encode_field(graph, scaled)
                 latent_frames.append(latent.cpu().numpy())
@@ -303,7 +303,7 @@ def load_artifacts(
             latent_shape = group["latents"].shape
             if (
                 len(latent_shape) != 3
-                or latent_shape[0] != 75
+                or latent_shape[0] != 65
                 or latent_shape[2] != channels
             ):
                 raise ValueError(

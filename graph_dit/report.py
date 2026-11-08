@@ -22,7 +22,7 @@ def report_run(run: Path, output: Path, *, movies: bool = False) -> None:
     status = json.loads((run / "status.json").read_text())
     launches = sorted(run.glob("attempt_*/launch.json"))
     debug = bool(launches and json.loads(launches[-1].read_text()).get("debug"))
-    scope_label = "Synthetic acceptance" if debug else "Validation-24"
+    scope_label = "Synthetic acceptance" if debug else "Validation-100"
     all_rows = [
         row
         for file_name in sorted(run.glob("attempt_*/training.jsonl"))
@@ -86,8 +86,8 @@ def report_run(run: Path, output: Path, *, movies: bool = False) -> None:
         f"LR={config['training']['learning_rate']:g}, floor={config['training']['min_learning_rate']:g}, schedule={config['training']['schedule']}, precision={config['training']['precision']}",
         f"schedule endpoint={config['training']['schedule_total_updates']:,}; allocated endpoint={status.get('stage_end_updates')}",
         f"Status: {status['state']}; completed updates={status.get('update')}; windows={status.get('examples_seen', status.get('update'))}",
-        "Train 75-frame VGAE / fixed first-65-frame DiT; observed frame 0 -> future 1..64",
-        "dt=0.0016; common physical evaluator; Test sealed",
+        "Train65 VGAE / joint65 DiT; observed stored frame 0 -> future 1..64",
+        "dt=0.15; common physical evaluator; Test sealed",
         f"Selected: {selection['weights']} at update {selection['update']}, score={selection['score']}, failed clips={selection['failed_clips']}"
         if selection
         else "No completed checkpoint selection",
@@ -170,7 +170,7 @@ def report_campaign(plan: Path, output: Path) -> None:
                 "State",
                 "Updates",
                 "Weights",
-                "Val24 UV relRMSE",
+                "Val100 UV relRMSE",
                 "Failures",
             ],
             cellLoc="left",

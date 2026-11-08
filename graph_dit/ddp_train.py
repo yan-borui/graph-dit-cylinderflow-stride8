@@ -346,7 +346,7 @@ def train_distributed(
                         "examples_seen": update * ctx.world,
                         "training_seed": config["seed"],
                         "config": config,
-                        "scope": "validation24_monitor",
+                        "scope": "validation100_monitor",
                         "debug": debug,
                     }
                     ctx.all_call(

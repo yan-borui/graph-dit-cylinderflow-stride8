@@ -136,7 +136,12 @@ def window_at(cache: h5py.File, index: int, device: torch.device) -> dict:
 
 def freeze_source(run: Path, resume: bool) -> None:
     source = run / "source"
-    files = sorted(ROOT.glob("graph_dit/*.py")) + sorted(ROOT.glob("dgn4cfd/**/*.py"))
+    files = (
+        sorted(ROOT.glob("graph_dit/*.py"))
+        + sorted(ROOT.glob("dgn4cfd/**/*.py"))
+        + sorted(ROOT.glob("megaflow_data/*.py"))
+        + sorted(ROOT.glob("megaflow_data/*.json"))
+    )
     for original in files:
         destination = source / original.relative_to(ROOT)
         if resume:
@@ -325,7 +330,7 @@ def _train_locked(
     physical_monitor = None
     strict_selection = (
         config["validation"].get("selection")
-        == "validation24_complete_strict_uv_raw_ema"
+        == "validation100_complete_strict_uv_raw_ema"
     )
     if strict_selection or config["validation"].get("early_stopping", {}).get(
         "enabled", False
@@ -493,7 +498,7 @@ def _train_locked(
                     "config": config,
                     "scope": "acceptance_validation1"
                     if acceptance is not None
-                    else "validation24_monitor",
+                    else "validation100_monitor",
                     "debug": debug,
                 }
                 validation_started = time.perf_counter()

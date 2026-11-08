@@ -27,7 +27,7 @@ def score(inputs, output_dir):
                 bundle["points"],
                 bundle["cells"],
                 bundle["node_type"],
-                0.0016,
+                0.15,
             )
             metrics.update(
                 boundary_metrics(

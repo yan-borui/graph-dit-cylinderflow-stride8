@@ -163,9 +163,7 @@ def peak_memory(device: torch.device) -> dict:
 
 
 def monitor_indices(indices: tuple[int, ...]) -> tuple[int, ...]:
-    positions = np.rint(np.linspace(0, len(indices) - 1, min(24, len(indices)))).astype(
-        int
-    )
+    positions = np.rint(np.linspace(0, len(indices) - 1, len(indices))).astype(int)
     return tuple(indices[position] for position in positions)
 
 

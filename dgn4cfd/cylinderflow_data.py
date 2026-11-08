@@ -18,7 +18,7 @@ from .transforms import AddDirichletMask, Copy, MeshCoarsening, ScaleEdgeAttr
 
 
 CYLINDERFLOW_FORMAT = "dgn4cfd.mgn_cylinderflow_raw600.v1"
-CYLINDERFLOW_TEMPORAL_STRIDE_FORMAT = "dgn4cfd.mgn_airfoil_uvp_temporal_stride.v1"
+CYLINDERFLOW_TEMPORAL_STRIDE_FORMAT = "dgn4cfd.megaflow2d_ellipse_uvp.v1"
 SUPPORTED_CYLINDERFLOW_FORMATS = {
     CYLINDERFLOW_FORMAT,
     CYLINDERFLOW_TEMPORAL_STRIDE_FORMAT,
@@ -58,7 +58,7 @@ class CylinderFlowDataContract:
         )
         frames = int(payload.get("frames", default_frames))
         temporal_stride = int(payload.get("temporal_stride", 1))
-        raw_frame_dt = float(payload.get("raw_frame_dt", 0.0002))
+        raw_frame_dt = float(payload.get("raw_frame_dt", 0.01))
         frame_dt = float(payload.get("frame_dt", raw_frame_dt * temporal_stride))
         if frames < 1 or temporal_stride < 1:
             raise ValueError("CylinderFlow frame count and stride must be positive")
@@ -221,6 +221,9 @@ class CylinderFlowH5Dataset(torch.utils.data.Dataset):
         self.raw_frame_dt = self.contract.raw_frame_dt
         self.frame_dt = self.contract.frame_dt
         self.trajectories = tuple(self.manifest["trajectories"])
+        self.by_id = {
+            int(record["global_index"]): record for record in self.trajectories
+        }
         self.transform = transform
         with h5py.File(self.path, "r") as handle:
             if str(handle.attrs.get("format", "")) != self.format:
@@ -246,7 +249,7 @@ class CylinderFlowH5Dataset(torch.utils.data.Dataset):
         step_size: int = 1,
         cell_list: bool = False,
     ) -> Graph:
-        if idx < 0 or idx >= len(self):
+        if idx not in self.by_id:
             raise IndexError(idx)
         if n_in < 1 or step_size < 1 or sequence_start < 0:
             raise ValueError("sequence arguments must be positive")
@@ -255,7 +258,7 @@ class CylinderFlowH5Dataset(torch.utils.data.Dataset):
             raise IndexError(
                 f"requested sequence exceeds the {self.frames}-frame trajectory"
             )
-        record = self.trajectories[idx]
+        record = self.by_id[idx]
         with h5py.File(self.path, "r") as handle:
             group = handle[record["group"]]
             frame_slice = slice(
@@ -279,15 +282,21 @@ class CylinderFlowH5Dataset(torch.utils.data.Dataset):
         graph.bound = torch.full((pos.size(0),), 0, dtype=torch.uint8)
         graph.bound[node_type == 4] = 2
         graph.bound[node_type == 5] = 3
-        graph.bound[node_type == 2] = 4
-        supported = (node_type == 0) | (node_type == 4) | (node_type == 2)
+        graph.bound[(node_type == 2) | (node_type == 6)] = 4
+        supported = (
+            (node_type == 0)
+            | (node_type == 4)
+            | (node_type == 2)
+            | (node_type == 5)
+            | (node_type == 6)
+        )
         if not bool(supported.all()):
             unknown = torch.unique(node_type[~supported]).tolist()
             raise ValueError(f"unsupported CylinderFlow node types: {unknown}")
         graph.omega = torch.zeros(pos.size(0), 3, dtype=torch.float32)
         graph.omega[(node_type == 0) | (node_type == 5), 0] = 1.0
         graph.omega[node_type == 4, 1] = 1.0
-        graph.omega[node_type == 2, 2] = 1.0
+        graph.omega[(node_type == 2) | (node_type == 6), 2] = 1.0
         graph.edge_index = triangle_cells_to_edge_index(cells)
         graph.edge_attr = pos[graph.edge_index[1]] - pos[graph.edge_index[0]]
         if cell_list:
@@ -295,4 +304,5 @@ class CylinderFlowH5Dataset(torch.utils.data.Dataset):
         return self.transform(graph) if self.transform is not None else graph
 
     def __getitem__(self, idx: int) -> Graph:
-        return self.get_sequence(idx, sequence_start=0, n_in=1)
+        case = int(self.trajectories[idx]["global_index"])
+        return self.get_sequence(case, sequence_start=0, n_in=1)
