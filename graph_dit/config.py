@@ -59,6 +59,23 @@ def resolve_window_config(config: dict) -> dict:
 
 
 def validate_config(config: dict) -> None:
+    experiment = config.get("experiment")
+    if experiment is not None:
+        variants = {"h1", "h2", "full", "distance", "deterministic", "gnn_diffusion"}
+        if experiment not in variants or config.get("seed") not in (0, 1, 2):
+            raise ValueError("unknown Ellipse experiment or training seed")
+        template = (
+            Path(__file__).resolve().parents[1]
+            / "configs"
+            / f"ellipse_{experiment}_4gpu.json"
+        )
+        expected = resolve_window_config(
+            json.loads(template.read_text(encoding="utf-8"))
+        )
+        expected["seed"] = config["seed"]
+        if config != expected:
+            raise ValueError("Ellipse experiments retain their declared matched recipe")
+        return
     ablation_protocol = "graph_dit.airfoil.attention.ae75.joint65.locked.v1"
     ablation = config.get("protocol") == ablation_protocol
     if ablation:

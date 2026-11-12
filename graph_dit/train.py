@@ -21,6 +21,7 @@ import numpy as np
 import torch
 
 from dgn4cfd.nn.diffusion.models.graph_video_dit import GraphVideoDiT
+from .models import build_model
 from .config import load_config, validate_config, learning_rate
 from .representation import load_artifacts
 from .metrics import selection_key
@@ -141,6 +142,8 @@ def freeze_source(run: Path, resume: bool) -> None:
         + sorted(ROOT.glob("dgn4cfd/**/*.py"))
         + sorted(ROOT.glob("megaflow_data/*.py"))
         + sorted(ROOT.glob("megaflow_data/*.json"))
+        + sorted(ROOT.glob("configs/ellipse*.json"))
+        + sorted(ROOT.glob("scripts/ellipse*.sh"))
     )
     for original in files:
         destination = source / original.relative_to(ROOT)
@@ -278,7 +281,7 @@ def _train_locked(
     training = config["training"]
     write_json(run / "config.json", config)
     seed_everything(config["seed"])
-    model = GraphVideoDiT(**config["model"]).to(device)
+    model = build_model(config).to(device)
     model.set_latent_statistics(identity["latent_mean"], identity["latent_std"])
     optimizer = torch.optim.AdamW(
         model.parameters(),

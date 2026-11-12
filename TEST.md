@@ -16,3 +16,14 @@ Set AUTOENCODER/ARTIFACTS_DIR for GLaDiT as in training. AROMA and Text2PDE auto
 Predictions use physical UVP `[65,N,3]` and the original high-resolution mesh. Only future64 enters forecast scores. Source frames are 1,16,…,961 and relative times are 0–9.6 s. VGAE output is explicitly reconstruction, with its selection loss retained. Four ranks partition cases without padding; merges verify complete unique coverage. Failures remain in reports and must accompany reported metrics. Test use must be recorded if its results guide later research choices.
 
 The full conversion and four-GPU execution remain to be run in the production environment. See [ELLIPSE.md](ELLIPSE.md) for the complete protocol and method paths.
+
+## Ablations, sampling and shared reporting
+
+[Complete experiment guide](ELLIPSE_EXPERIMENTS.md) covers deterministic Transformer,
+GNN diffusion, H1/H2/full/distance attention, training seeds 0/1/2, 20-checkpoint
+EMA0.999 Validation/Test curves, fixed-weight S/K scans, Validation24 latency and
+memory, training cost, and shared-scale physical plots. Use
+`scripts/ellipse_experiments.sh`; existing `scripts/ellipse_4gpu.sh` actions remain
+compatible and its evaluation actions accept explicit sampling/weight arguments.
+The added interfaces have static verification only; no experiment was launched
+as part of this delivery.

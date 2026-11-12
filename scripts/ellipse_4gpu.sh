@@ -7,6 +7,7 @@ export CUDA_DEVICE_ORDER=PCI_BUS_ID PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-4}
 python_bin=${PYTHON:-python}
 action=${1:-train}
+if (( $# > 0 )); then shift; fi
 case "$action" in
     data|prepare|train|resume|validate|test) ;;
     *) printf 'Usage: bash scripts/ellipse_4gpu.sh data|prepare|train|resume|validate|test\n' >&2; exit 2 ;;
@@ -64,7 +65,7 @@ if [[ "$action" == prepare ]]; then exit 0; fi
 if [[ "$action" == validate || "$action" == test ]]; then
     exec "$python_bin" -m torch.distributed.run --standalone --nproc-per-node=4 \
         --module graph_dit.evaluate_ellipse --run "$RESULT_ROOT" --data-dir "$DATA_DIR" \
-        --artifacts "$ARTIFACTS_DIR" --split "$split" --output-dir "$EVAL_DIR"
+        --artifacts "$ARTIFACTS_DIR" --split "$split" --output-dir "$EVAL_DIR" "$@"
 fi
 mkdir -p "$(dirname -- "$RESULT_ROOT")"
 log_dir=$(mktemp -d "${RESULT_ROOT}_launcher_XXXXXX")
@@ -72,7 +73,7 @@ set +e
 "$python_bin" -m torch.distributed.run --standalone --nnodes=1 --nproc-per-node=4 \
     --log-dir "$log_dir" --tee 3 --module graph_dit.train --config "$config" \
     --artifacts "$ARTIFACTS_DIR" --data-dir "$DATA_DIR" --output-dir "$RESULT_ROOT" \
-    --stage-end-updates 250000 --device cuda "${extra[@]}" 2>&1 | tee "$log_dir/launcher.log"
+    --stage-end-updates "${STAGE_END_UPDATES:-250000}" --device cuda "${extra[@]}" 2>&1 | tee "$log_dir/launcher.log"
 rc=${PIPESTATUS[0]}
 set -e
 printf '%s\n' "$rc" > "$log_dir/exit_code.txt"

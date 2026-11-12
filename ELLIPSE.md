@@ -90,3 +90,14 @@ Both checkouts must use this Ellipse branch. The wrapper completes or resumes VG
 - [EAGLE](https://github.com/yan-borui/eagle-cylinderflow-stride8/tree/feature/megaflow2d-ellipse-uvp-4gpu)
 - [AROMA](https://github.com/yan-borui/aroma-cylinderflow-stride8/tree/feature/megaflow2d-ellipse-uvp-4gpu)
 - [Text2PDE](https://github.com/yan-borui/text2pde-multigeometry-1plus64/tree/feature/megaflow2d-ellipse-uvp-4gpu)
+
+## Ablations, sampling and shared reporting
+
+[Complete experiment guide](ELLIPSE_EXPERIMENTS.md) covers deterministic Transformer,
+GNN diffusion, H1/H2/full/distance attention, training seeds 0/1/2, 20-checkpoint
+EMA0.999 Validation/Test curves, fixed-weight S/K scans, Validation24 latency and
+memory, training cost, and shared-scale physical plots. Use
+`scripts/ellipse_experiments.sh`; existing `scripts/ellipse_4gpu.sh` actions remain
+compatible and its evaluation actions accept explicit sampling/weight arguments.
+The added interfaces have static verification only; no experiment was launched
+as part of this delivery.

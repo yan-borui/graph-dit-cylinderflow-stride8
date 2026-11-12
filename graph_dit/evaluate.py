@@ -19,6 +19,7 @@ from dgn4cfd.cylinderflow_data import (
 from dgn4cfd.graph_distance import unweighted_shortest_path_hops
 from dgn4cfd.nn.diffusion.graph_window_codec import FrozenUVPLatentCodec
 from dgn4cfd.nn.diffusion.models.graph_video_dit import GraphVideoDiT
+from .models import build_model
 from . import EVALUATOR_VERSION
 from .data import Dataset
 from .metrics import compute_metrics, summarize_trajectories
@@ -158,19 +159,22 @@ class Predictor:
         return prediction, pre_boundary
 
     def predict_ensemble(
-        self, sample: dict, member_seeds: list[int]
+        self, sample: dict, member_seeds: list[int], member_callback=None
     ) -> tuple[np.ndarray, np.ndarray]:
         """Average decoded physical UVP fields while preserving the initial frame."""
         if not member_seeds:
             raise ValueError("an ensemble requires at least one member")
         mean = None
-        for member_seed in member_seeds:
+        for ordinal, member_seed in enumerate(member_seeds):
             member, _ = self.predict(sample, member_seed, diagnostics=False)
+            if member_callback is not None:
+                member_callback(ordinal, member_seed, member)
             if mean is None:
                 mean = member.astype(np.float64)
             else:
                 mean += member
         mean /= len(member_seeds)
+        mean = mean.astype(np.float32)
         mean[0] = sample["initial"]
         return writeback_velocity(mean, sample["initial"], sample["node_type"]), mean
 
@@ -185,16 +189,23 @@ def evaluate_model(
     fail_on_runtime_error: bool = False,
     resume: bool = False,
     ensemble_size: int = 1,
+    retain_members: bool = False,
+    member_label_stride: int | None = None,
 ) -> dict:
     if ensemble_size < 1:
         raise ValueError("ensemble_size must be positive")
+    if member_label_stride is not None and member_label_stride < ensemble_size:
+        raise ValueError("member label stride must cover the entire ensemble")
     if ensemble_size != 1 or predictor.sampling_steps != 20:
         provenance = {
             **provenance,
-            "sampling_steps": predictor.sampling_steps,
+            "sampling_steps": 1
+            if getattr(predictor.model, "model_type", None) == "deterministic"
+            else predictor.sampling_steps,
             "ensemble_size": ensemble_size,
             "aggregation": "physical_uvp_mean",
-            "member_label_rule": "ensemble_label * ensemble_size + member_index",
+            "member_label_rule": "ensemble_label * member_label_stride + member_index",
+            "member_label_stride": member_label_stride or ensemble_size,
         }
     output.mkdir(parents=True, exist_ok=resume)
     expected_identity = {
@@ -230,18 +241,64 @@ def evaluate_model(
             if (index, label) in completed:
                 continue
             member_seeds = [
-                seed_draw(index, label * ensemble_size + member)
+                seed_draw(
+                    index, label * (member_label_stride or ensemble_size) + member
+                )
                 for member in range(ensemble_size)
             ]
             actual_seed = member_seeds[0]
             error = None
             synchronize(predictor.device)
             begin = time.perf_counter()
+            member_rows = []
+
+            def save_member(ordinal, member_seed, member):
+                reference = predictor.data.evaluation(index)["field"]
+                values = compute_metrics(
+                    member,
+                    reference,
+                    sample["points"],
+                    sample["cells"],
+                    sample["node_type"],
+                    0.15,
+                )
+                member_file = (
+                    output
+                    / "members"
+                    / f"trajectory_{index:04d}_seed{label}_member{ordinal:03d}.npz"
+                )
+                save_prediction(
+                    member_file,
+                    prediction=member,
+                    pre_boundary=member,
+                    target=reference,
+                    points=sample["points"],
+                    cells=sample["cells"],
+                    node_type=sample["node_type"],
+                    trajectory_index=index,
+                    seed=ordinal,
+                    provenance={**provenance, "prng_seed": member_seed},
+                )
+                member_rows.append(
+                    {
+                        "trajectory_index": index,
+                        "ensemble_label": label,
+                        "seed": ordinal,
+                        "prng_seed": member_seed,
+                        **values,
+                        "prediction_file": str(member_file.relative_to(output)),
+                    }
+                )
+
             try:
                 if ensemble_size == 1:
                     prediction, pre = predictor.predict(sample, actual_seed)
+                    if retain_members:
+                        save_member(0, actual_seed, prediction)
                 else:
-                    prediction, pre = predictor.predict_ensemble(sample, member_seeds)
+                    prediction, pre = predictor.predict_ensemble(
+                        sample, member_seeds, save_member if retain_members else None
+                    )
             except (RuntimeError, FloatingPointError) as failure:
                 if fail_on_runtime_error and isinstance(failure, RuntimeError):
                     write_json(
@@ -310,6 +367,8 @@ def evaluate_model(
                 "member_prng_seeds": member_seeds,
                 **metrics,
                 "inference_seconds": seconds,
+                "inference_seconds_includes_member_export": retain_members,
+                "members": member_rows,
                 "error": error,
                 "prediction_file": str(filename.relative_to(output)),
             }
@@ -353,7 +412,7 @@ def load_selected(
         raise ValueError("unsupported standalone training checkpoint")
     if checkpoint["artifact_id"] != identity["artifact_id"]:
         raise ValueError("checkpoint and prepared representation differ")
-    model = GraphVideoDiT(**checkpoint["config"]["model"])
+    model = build_model(checkpoint["config"])
     state = checkpoint["model"] if weights == "raw" else checkpoint["ema"][weights]
     model.load_state_dict(state, strict=True)
     return model.eval(), checkpoint

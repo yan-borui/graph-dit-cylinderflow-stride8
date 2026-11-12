@@ -16,7 +16,7 @@ import h5py
 import torch
 from torch.nn.parallel import DistributedDataParallel
 
-from dgn4cfd.nn.diffusion.models.graph_video_dit import GraphVideoDiT
+from .models import build_model
 from .config import learning_rate, validate_config
 from .distributed import Context, capture_rng, restore_rng
 from .evaluate import Predictor, evaluate_model
@@ -70,6 +70,15 @@ def merge_evaluation(
         shard = output / f"rank_{rank:03d}"
         rows.extend(json.loads((shard / "completed_cases.json").read_text()))
         for row in json.loads((shard / "completed_cases.json").read_text()):
+            for member in row.get("members", []):
+                source_member = shard / member["prediction_file"]
+                destination_member = output / member["prediction_file"]
+                destination_member.parent.mkdir(parents=True, exist_ok=True)
+                if not destination_member.exists():
+                    try:
+                        os.link(source_member, destination_member)
+                    except OSError:
+                        shutil.copyfile(source_member, destination_member)
             source = shard / row["prediction_file"]
             destination = output / row["prediction_file"]
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -86,6 +95,9 @@ def merge_evaluation(
     summary = summarize_trajectories(rows)
     summary.update(indices=list(indices), sampling_seeds=seeds, provenance=provenance)
     atomic_rows(output / "case_metrics.jsonl", rows)
+    member_rows = [member for row in rows for member in row.get("members", [])]
+    if member_rows:
+        atomic_rows(output / "member_metrics.jsonl", member_rows)
     write_csv(output / "case_metrics.csv", rows)
     write_csv(output / "trajectory_metrics.csv", summary["trajectory_metrics"])
     write_json(
@@ -141,7 +153,7 @@ def train_distributed(
 
         attempt_dir = Path(ctx.primary_call(prepare))
         seed_everything(config["seed"])
-        model = GraphVideoDiT(**config["model"]).to(device)
+        model = build_model(config).to(device)
         model.set_latent_statistics(identity["latent_mean"], identity["latent_std"])
         ddp = DistributedDataParallel(
             LossForward(model),
@@ -169,7 +181,13 @@ def train_distributed(
             config["seed"] + 17011 + ctx.rank * 1000003
         )
         predictor = Predictor(
-            model, artifacts, data_dir, device, training["precision"], debug=debug
+            model,
+            artifacts,
+            data_dir,
+            device,
+            training["precision"],
+            debug=debug,
+            sampling_steps=config["validation"]["sampling_steps"],
         )
         run_id = ctx.broadcast(str(uuid.uuid4()) if ctx.primary else None)
         elapsed_before = 0.0
@@ -358,6 +376,7 @@ def train_distributed(
                             provenance,
                             fail_on_runtime_error=True,
                             resume=True,
+                            ensemble_size=config["validation"].get("ensemble_size", 1),
                         )
                     )
 
@@ -452,8 +471,10 @@ def train_distributed(
                     training["gradient_clip"],
                     error_if_nonfinite=True,
                 )
-                attention_norm = float(
-                    model.blocks[0].attention.in_proj_weight.grad.norm()
+                attention_norm = (
+                    float(model.blocks[0].attention.in_proj_weight.grad.norm())
+                    if hasattr(model, "blocks")
+                    else None
                 )
                 optimizer.step()
                 ema.update(model)
@@ -525,7 +546,7 @@ def train_distributed(
                                     f"preflight parameters did not update finitely: {name}"
                                 )
                             changes[name] = max(values)
-                        if attention_norm <= 0:
+                        if attention_norm is not None and attention_norm <= 0:
                             raise RuntimeError(
                                 "preflight did not reach a nonzero attention gradient"
                             )
