@@ -1,3 +1,5 @@
+**75 帧评测：**[完整 Validation75 / Test75 数据与运行入口](EVALUATE75.md)。
+
 **Test 评测：**[官方下载、1+64 转换与完整 Test100 入口](TEST.md)。
 
 **滑动窗口续生成：**[固定权重、64 帧窗口和重叠平均](SLIDING_WINDOW.md)。

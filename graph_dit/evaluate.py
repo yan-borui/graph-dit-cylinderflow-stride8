@@ -71,11 +71,11 @@ class Predictor:
         self.static_graphs = {}
         self.static_hops = {}
 
-    def use_test_data(self, directory: Path) -> None:
+    def use_test_data(self, directory: Path, *, expected_frames: int = 65) -> None:
         """Keep frozen Train normalization and transforms for Test geometry."""
         from mgn_data.test_data import TestData
 
-        data = TestData(directory, "cylinderflow")
+        data = TestData(directory, "cylinderflow", expected_frames=expected_frames)
         data.bind_training_manifest(self.data.manifest)
         self.data = data
         self.graphs = CylinderFlowH5Dataset(
