@@ -1,5 +1,11 @@
 # Matched 250K K1 evaluation
 
+For the width-256/512/1024 temporal GNN ladder, use [GNN_LADDER.md](GNN_LADDER.md).
+GNN evaluation reconstructs the recorded checkpoint width; `--expected-gnn-width` can
+enforce the requested width. New summaries include architecture and parameter count.
+The three-model collector below keeps the original width-128 control; the ladder has
+its own collector.
+
 This entrypoint evaluates the original seed-0 ablation runs at update 250000 with EMA 0.999.
 It never reads or changes selection.json. Use the exact runs from the previous K8 table,
 not the submitted 550K CylinderFlow model or Validation-selected alternatives.

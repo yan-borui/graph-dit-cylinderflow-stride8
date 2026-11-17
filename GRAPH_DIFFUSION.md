@@ -11,6 +11,8 @@
 
 ## 准备和启动
 
+宽度 256、512、1024 的四卡容量阶梯及固定 250K 三次独立 K1 评测，见 [GNN_LADDER.md](GNN_LADDER.md)。本页下方默认入口继续使用原宽度 128 配方。
+
 使用现有的 Linux CUDA/NCCL 环境，从仓库根目录运行。两个数据集各用自己的投稿 `PAPER_ARTIFACTS` 目录，包含 `artifact.json` 和匹配的 `autoencoder.pt` 或 `dit_autoencoder.pt`。CylinderFlow 的表示和上游资产 ID 已固定。Airfoil 须将同一投稿选中 checkpoint 记录的两个 ID 设置为 `PAPER_REPRESENTATION_ID`、`PAPER_ARTIFACT_ID`。
 
 ```bash

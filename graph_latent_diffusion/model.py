@@ -30,14 +30,17 @@ class GraphLatentDiffusion(nn.Module):
     beta_end = 2e-2
     width = 128
     depths = (1, 2, 2)
+    supported_widths = (128, 256, 512, 1024)
 
     @classmethod
-    def architecture(cls) -> dict:
+    def architecture(cls, *, width: int = 128) -> dict:
         """Settings that must match when resuming or scoring a checkpoint."""
+        if type(width) is not int or width not in cls.supported_widths:
+            raise ValueError(f"width must be one of {cls.supported_widths}")
         return {
             "backbone": "multiscale_graph_unet",
             "objective": "epsilon_mse",
-            "width": cls.width,
+            "width": width,
             "depths": list(cls.depths),
             "latent_channels": cls.latent_features,
             "condition_channels": cls.condition_features,
@@ -49,9 +52,18 @@ class GraphLatentDiffusion(nn.Module):
             "beta_end": cls.beta_end,
         }
 
-    def __init__(self) -> None:
+    @classmethod
+    def from_architecture(cls, config: dict) -> GraphLatentDiffusion:
+        """Construct the recorded width after checking the complete architecture."""
+        expected = cls.architecture(width=config["width"])
+        if any(config.get(key) != value for key, value in expected.items()):
+            raise ValueError("checkpoint uses a different graph diffusion architecture")
+        return cls(width=config["width"])
+
+    def __init__(self, *, width: int = 128) -> None:
         super().__init__()
-        width = self.width
+        self.architecture(width=width)
+        self.width = width
         emb_width = 4 * width
         block_features = self.future_frames * self.latent_features
         self.node_encoder = nn.Linear(

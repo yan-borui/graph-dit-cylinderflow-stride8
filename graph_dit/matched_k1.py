@@ -85,12 +85,20 @@ def load_predictor(args: argparse.Namespace, state: dict, device: torch.device):
         from deterministic_joint.model import JointGraphTransformer
 
         model = JointGraphTransformer().to(device)
+        expected_model = model.architecture()
         predict_case = lambda sample, seed: predict(model, data, sample)
     else:
         from graph_latent_diffusion import CHECKPOINT_FORMAT
         from graph_latent_diffusion.model import GraphLatentDiffusion
 
-        model = GraphLatentDiffusion().to(device)
+        model_config = state["config"]["model"]
+        if (
+            args.expected_gnn_width is not None
+            and model_config["width"] != args.expected_gnn_width
+        ):
+            raise ValueError("checkpoint differs from the requested GNN width")
+        model = GraphLatentDiffusion.from_architecture(model_config).to(device)
+        expected_model = model.architecture(width=model.width)
 
         def predict_case(sample, seed):
             z0, context, graph, decoder = data.encode(sample)
@@ -102,9 +110,7 @@ def load_predictor(args: argparse.Namespace, state: dict, device: torch.device):
 
     if state.get("format") != CHECKPOINT_FORMAT:
         raise ValueError("wrong checkpoint model format")
-    if any(
-        state["config"]["model"].get(k) != v for k, v in model.architecture().items()
-    ):
+    if any(state["config"]["model"].get(k) != v for k, v in expected_model.items()):
         raise ValueError("checkpoint architecture mismatch")
     model.load_state_dict(state["ema"][args.weights], strict=True)
     model.eval()
@@ -145,6 +151,8 @@ def evaluate(args: argparse.Namespace) -> None:
         "run_id": run_id,
         "checkpoint": str(args.checkpoint),
         "training_seed": 0,
+        "model_config": state["config"]["model"],
+        "parameter_count": state.get("parameter_count"),
         "representation_id": state.get("representation_id"),
         "artifact_id": state["artifact_id"],
         "source": source,
@@ -244,32 +252,50 @@ def evaluate(args: argparse.Namespace) -> None:
         )
 
 
+def read_complete_summary(filename: Path) -> dict:
+    """Validate a complete fixed-weight score-averaging result."""
+    result = json.loads(filename.read_text(encoding="utf-8"))
+    model = result.get("model")
+    repeats = 1 if model == "regression" else 3
+    expected = {
+        "protocol": PROTOCOL,
+        "update": 250000,
+        "weights": "ema_0.999",
+        "future_frames": 64,
+        "ensemble_size": 1,
+        "independent_repeats": repeats,
+        "sampling_labels": [0] if repeats == 1 else [0, 1, 2],
+        "sampling_steps": 0 if repeats == 1 else 6,
+        "complete": True,
+        "failure_count": 0,
+        "trajectory_count": 100,
+        "training_seed": 0,
+        "sample_count": 100 * repeats,
+        "aggregation": "score each K1; average repeats within trajectory; equal trajectory mean",
+    }
+    if model not in MODELS or any(result.get(k) != v for k, v in expected.items()):
+        raise ValueError(f"incomplete or incompatible summary: {filename}")
+    indices = result.get("indices", [])
+    if len(indices) != 100 or len(set(indices)) != 100:
+        raise ValueError(f"invalid evaluation population: {filename}")
+    if not np.isfinite(result["metrics"]["uv_relative_rmse"]):
+        raise ValueError(f"nonfinite summary score: {filename}")
+    return result
+
+
 def collect(args: argparse.Namespace) -> None:
     """Accept only a complete matched table, without mixing K8 or other weights."""
     rows, populations, runs = {}, {}, {}
     for filename in args.summaries:
-        result = json.loads(filename.read_text(encoding="utf-8"))
+        result = read_complete_summary(filename)
         model, dataset, split = (result[k] for k in ("model", "dataset", "split"))
         key = (dataset, split, model)
-        repeats = 1 if model == "regression" else 3
-        expected = {
-            "protocol": PROTOCOL,
-            "update": 250000,
-            "weights": "ema_0.999",
-            "future_frames": 64,
-            "ensemble_size": 1,
-            "independent_repeats": repeats,
-            "sampling_labels": [0] if repeats == 1 else [0, 1, 2],
-            "sampling_steps": 0 if repeats == 1 else 6,
-            "complete": True,
-            "failure_count": 0,
-            "trajectory_count": 100,
-            "training_seed": 0,
-            "sample_count": 100 * repeats,
-        }
-        if key in rows or any(result.get(k) != v for k, v in expected.items()):
+        repeats = result["independent_repeats"]
+        if key in rows:
+            raise ValueError(f"duplicate summary: {filename}")
+        if model == "gnn" and result.get("model_config", {}).get("width", 128) != 128:
             raise ValueError(
-                f"duplicate, incomplete or incompatible summary: {filename}"
+                "use graph_latent_diffusion.ladder collect for widened GNNs"
             )
         population = (
             result["indices"],
@@ -338,6 +364,7 @@ def main() -> None:
         run.add_argument("--" + name, type=Path, required=True)
     run.add_argument("--run-id", required=True)
     run.add_argument("--weights", choices=("ema_0.999",), default="ema_0.999")
+    run.add_argument("--expected-gnn-width", type=int, choices=(128, 256, 512, 1024))
     for name in ("artifacts", "cache-dir", "test-data-dir"):
         run.add_argument("--" + name, type=Path)
     summary = sub.add_parser("collect")

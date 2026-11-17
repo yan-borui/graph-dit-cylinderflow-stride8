@@ -15,7 +15,11 @@ python=${PYTHON:-python}
 work=${WORK_DIR:-"$repo/runs/graph_latent_diffusion"}
 export DATA_DIR=${DATA_DIR:-"$work/$dataset/data"}
 export CACHE_DIR=${CACHE_DIR:-"$work/$dataset/train-cache"}
-run=${RESULT_ROOT:-"$work/$dataset/graph-diffusion-seed0"}
+width=${MODEL_WIDTH:-128}
+case "$width" in 128|256|512|1024) ;; *) echo "Invalid MODEL_WIDTH: $width" >&2; exit 2 ;; esac
+default_run="$work/$dataset/graph-diffusion-seed0"
+if [[ "$width" != 128 ]]; then default_run="$work/$dataset/graph-diffusion-w${width}-seed0"; fi
+run=${RESULT_ROOT:-"$default_run"}
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 
 case "$action" in
@@ -32,7 +36,7 @@ case "$action" in
     fi
     exec "$python" -m torch.distributed.run --standalone --nnodes=1 --nproc-per-node=4 \
       --module graph_latent_diffusion.train --dataset "$dataset" --data-dir "$DATA_DIR" \
-      --cache-dir "$CACHE_DIR" --result-root "$run" "${options[@]}"
+      --cache-dir "$CACHE_DIR" --result-root "$run" --width "$width" "${options[@]}"
     ;;
   eval|benchmark)
     steps=${SAMPLING_STEPS:-6}

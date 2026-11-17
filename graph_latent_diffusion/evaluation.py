@@ -78,6 +78,25 @@ def validation_rows(
     return rows
 
 
+def validation_k1_rows(
+    model: GraphLatentDiffusion,
+    data: EvaluationData,
+    indices: Iterable[int],
+    device: torch.device,
+) -> list[dict]:
+    """Monitor widened models with label-zero S6/K1 on fixed Validation24."""
+    rows = score_validation_rows(
+        model,
+        data,
+        indices,
+        device,
+        predict_case=partial(predict, model, data, sampling_steps=6, ensemble_size=1),
+    )
+    for row in rows:
+        row["member_prng_seeds"] = member_seeds(row["index"], 1)
+    return rows
+
+
 def main() -> None:
     parser = evaluation_parser(__doc__)
     parser.add_argument("--sampling-steps", type=int, default=SELECTION_STEPS)
@@ -101,13 +120,16 @@ def main() -> None:
         args.dataset,
         data.identity,
         CHECKPOINT_FORMAT,
-        expected_model=GraphLatentDiffusion.architecture(),
     )
-    model = GraphLatentDiffusion().to(device)
+    model = GraphLatentDiffusion.from_architecture(provenance["model_config"]).to(
+        device
+    )
     model.load_state_dict(weights, strict=True)
     model.eval()
     provenance.update(
         model="graph_latent_diffusion",
+        width=model.width,
+        parameter_count=sum(parameter.numel() for parameter in model.parameters()),
         sampling_steps=args.sampling_steps,
         ensemble_size=args.ensemble_size,
         sampler="DDIM",

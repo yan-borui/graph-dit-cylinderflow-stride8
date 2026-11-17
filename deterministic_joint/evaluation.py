@@ -140,6 +140,7 @@ def load_selected_weights(
         "representation_id": state["representation_id"],
         "seed": state["config"]["seed"],
         "future_frames": 64,
+        "model_config": state["config"]["model"],
     }
 
 

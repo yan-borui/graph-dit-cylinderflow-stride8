@@ -160,7 +160,14 @@ def validate(
     candidates, predictions = [], {}
     try:
         model.eval()
-        for weights in ("raw", *ema.states):
+        weight_names = (evaluation_settings or {}).get(
+            "weight_names", ("raw", *ema.states)
+        )
+        if not weight_names or any(
+            name != "raw" and name not in ema.states for name in weight_names
+        ):
+            raise ValueError("validation requested unavailable weights")
+        for weights in weight_names:
             if weights != "raw":
                 model.load_state_dict(ema.states[weights])
             parts = ctx.all_call(
@@ -499,7 +506,7 @@ def train(
         ctx.close()
 
 
-def parse_args(description: str) -> argparse.Namespace:
+def argument_parser(description: str) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--dataset", required=True, choices=["airfoil", "cylinderflow"])
     for name in ("data-dir", "cache-dir", "result-root"):
@@ -510,7 +517,11 @@ def parse_args(description: str) -> argparse.Namespace:
         type=int,
         help="shorten workload for a separately named four-GPU verification run",
     )
-    return parser.parse_args()
+    return parser
+
+
+def parse_args(description: str) -> argparse.Namespace:
+    return argument_parser(description).parse_args()
 
 
 def main() -> None:
